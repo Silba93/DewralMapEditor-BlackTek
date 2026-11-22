@@ -205,6 +205,38 @@ QtObject {
         function fileName(path) { return path.split(/[\\/]/).pop(); }
         function toLocalFile(url) { return String(url); }
         function clipboardText() { return text }
+        function positionFromText(source) {
+            let position = source.trim();
+            position = position.replace(/^Position\(/i, "(");
+            if (position.startsWith("(") && position.endsWith(")"))
+                position = position.slice(1, -1);
+            const keyed = position.startsWith("{") && position.endsWith("}");
+            if (keyed)
+                position = position.slice(1, -1);
+            const parts = position.split(",");
+            if (parts.length !== 3)
+                return {valid: false};
+            const axes = ["x", "y", "z"];
+            const values = {};
+            for (let i = 0; i < parts.length; ++i) {
+                let key = axes[i];
+                let digits = parts[i].trim();
+                if (keyed) {
+                    const match = digits.match(/^(?:"([xyz])"\s*:|([xyz])\s*=)\s*(\d+)$/i);
+                    if (!match)
+                        return {valid: false};
+                    key = (match[1] || match[2]).toLowerCase();
+                    digits = match[3];
+                }
+                if (!/^\d+$/.test(digits) || values[key] !== undefined)
+                    return {valid: false};
+                const number = Number(digits);
+                if (number > (key === "z" ? 15 : 65535))
+                    return {valid: false};
+                values[key] = number;
+            }
+            return {valid: true, x: values.x, y: values.y, z: values.z};
+        }
         function setClipboard(value) { text = value }
     }
     property QtObject brushStore: QtObject {

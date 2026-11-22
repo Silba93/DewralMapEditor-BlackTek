@@ -31,25 +31,32 @@ Item {
     }
 
     function positionText(format) {
-        var x = mapArea.ctx.x;
-        var y = mapArea.ctx.y;
-        var z = mapArea.ctx.z;
-        switch (format) {
-        case "tuple":
-            return "(" + x + ", " + y + ", " + z + ")";
-        case "lua":
-            return "{x = " + x + ", y = " + y + ", z = " + z + "}";
-        case "position":
-            return "Position(" + x + ", " + y + ", " + z + ")";
-        case "json":
-            return "{\"x\":" + x + ",\"y\":" + y + ",\"z\":" + z + "}";
-        default:
-            return x + ", " + y + ", " + z;
-        }
+        return Backend.fileTools.positionText(format, mapArea.ctx.x,
+                                              mapArea.ctx.y, mapArea.ctx.z);
     }
 
     function copyPosition(format) {
         Backend.fileTools.setClipboard(positionText(format));
+    }
+
+    function clipboardPosition() {
+        return Backend.fileTools.positionFromText(Backend.fileTools.clipboardText());
+    }
+
+    function refreshContextClipboard() {
+        mapArea.clipboardDestination = clipboardPosition();
+    }
+
+    function pasteTeleportLocation() {
+        const position = clipboardPosition();
+        if (position.valid !== true)
+            return false;
+        const changed = mapView.applyContextItemProperties({
+            teleportX: position.x, teleportY: position.y, teleportZ: position.z
+        });
+        if (changed)
+            mapArea.ctx = mapView.contextInfo();
+        return changed;
     }
 
 
@@ -147,6 +154,9 @@ Item {
         visible: Backend.otbmReader.loaded
         clip: true
 
+        property var clipboardDestination: ({valid: false, x: 0, y: 0, z: 0})
+        readonly property bool clipboardHasPosition: clipboardDestination.valid === true
+
         property var brushOptions: ({})
         property var ctx: ({
                 singleTile: false,
@@ -196,6 +206,8 @@ Item {
             }
             onContextMenuRequested: (x, y) => {
                 mapArea.ctx = mapView.contextInfo();
+                if (mapArea.ctx.teleport === true)
+                    workspace.refreshContextClipboard();
                 mapArea.brushOptions = ContextBrushes.options(mapArea.ctx, mapView,
                     Backend.tilesetStore, Backend.brushStore);
                 contextMenu.popup(x, y);
@@ -363,6 +375,18 @@ Item {
                 onTriggered: Backend.fileTools.setClipboard(mapArea.ctx.name)
             }
             MenuSeparator {}
+            DmeMenuItem {
+                text: mapArea.clipboardHasPosition
+                      ? "Paste Teleport Location ("
+                        + mapArea.clipboardDestination.x + ", "
+                        + mapArea.clipboardDestination.y + ", "
+                        + mapArea.clipboardDestination.z + ")"
+                      : "Paste Teleport Location"
+                visible: mapArea.ctx.teleport === true
+                height: visible ? implicitHeight : 0
+                enabled: mapArea.clipboardHasPosition
+                onTriggered: workspace.pasteTeleportLocation()
+            }
             DmeMenuItem {
                 text: "Go To Destination"
                 visible: mapArea.ctx.teleport === true && mapArea.ctx.hasTeleportDest === true

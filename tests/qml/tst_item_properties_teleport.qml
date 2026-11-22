@@ -59,6 +59,14 @@ Item {
                            text: "32004, 31929, 15", expected: [32004, 31929, 15]});
                 rows.push({tag: theme + "-bounds", theme: theme,
                            text: " 65535,0, 0\n", expected: [65535, 0, 0]});
+                rows.push({tag: theme + "-tuple", theme: theme,
+                           text: "(32004, 31929, 15)", expected: [32004, 31929, 15]});
+                rows.push({tag: theme + "-position", theme: theme,
+                           text: "Position(32004, 31929, 15)", expected: [32004, 31929, 15]});
+                rows.push({tag: theme + "-lua", theme: theme,
+                           text: "{z = 15, x = 32004, y = 31929}", expected: [32004, 31929, 15]});
+                rows.push({tag: theme + "-json", theme: theme,
+                           text: '{"y":31929,"x":32004,"z":15}', expected: [32004, 31929, 15]});
             }
             return rows;
         }
