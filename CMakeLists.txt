@@ -6,6 +6,7 @@ set(QT_CREATOR_SKIP_VCPKG_SETUP ON CACHE BOOL
     "Disable Qt Creator package-manager auto setup" FORCE)
 
 project(DewralMapEditor VERSION 1.1.56 LANGUAGES C CXX)
+set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT DewralMapEditor)
 
 set(DME_RELEASE_REPOSITORY "dewral/DewralMapEditor" CACHE STRING
     "GitHub repository hosting the stable update packages")
