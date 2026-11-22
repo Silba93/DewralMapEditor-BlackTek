@@ -17,6 +17,7 @@
 
 struct ClientPreparedState {
     QString key, datPath, sprPath, otbPath, fingerprint, error;
+    QString tomlPath;
     QString metadataName, spritesName;
     bool otfiFound = false;
     int version = 0;
@@ -50,6 +51,7 @@ struct ClientPreparedState {
         bool m_appearanceItems = false;
         decltype(std::declval<OtbReader>().m_loaded) m_loaded;
         decltype(std::declval<OtbReader>().m_errorString) m_errorString;
+        decltype(std::declval<OtbReader>().m_itemSource) m_itemSource;
     } otb;
     struct SprReaderState {
         decltype(std::declval<SprReader>().m_offsets) m_offsets;
@@ -159,6 +161,10 @@ QVariantMap resolveClient(const QVariantMap &profile) {
         if(!choice.isEmpty())return QFileInfo(choice).absoluteFilePath();
         if(folder.isEmpty()) { if(required)errors[key]="Choose a file or client folder";return QString(); }
         if(directory.exists(preferred))return directory.absoluteFilePath(preferred);
+        if (key == QLatin1String("toml")) {
+            const QString nested = directory.filePath(QStringLiteral("items/items.toml"));
+            if (QFileInfo(nested).isFile()) return QFileInfo(nested).absoluteFilePath();
+        }
         const auto matches=directory.entryList({"*."+key},QDir::Files,QDir::Name);
         if(matches.size()==1)return directory.absoluteFilePath(matches.first());
         if(matches.size()>1)errors[key]="Several files found; choose one explicitly";
@@ -225,9 +231,17 @@ QVariantMap resolveClient(const QVariantMap &profile) {
             paths[key]=otfiDir.filePath(key=="dat" ? otfi.metadataFile() : otfi.spritesFile());
         else paths[key]=find(key,key=="dat" ? "Tibia.dat" : "Tibia.spr",true);
     }
-    paths["otb"]=find("otb","items.otb",true);
-    paths["xml"]=find("xml","items.xml",false);
-    if(paths.value("xml").toString().isEmpty() && overrides.value("xml").toString().isEmpty() && !errors.contains("xml")) {
+    const QString itemSource = profile.value("itemSource").toString() == "blacktek"
+        ? QStringLiteral("blacktek") : QStringLiteral("standard");
+    if (itemSource == "blacktek") {
+        paths["toml"] = find("toml", "items.toml", true);
+    } else {
+        paths["otb"] = find("otb", "items.otb", true);
+    }
+    paths["xml"] = itemSource == "blacktek"
+        ? QString() : find("xml", "items.xml", false);
+    if (itemSource == "standard" && paths.value("xml").toString().isEmpty()
+        && overrides.value("xml").toString().isEmpty() && !errors.contains("xml")) {
         const auto resource=profile.value("resourceKey").toString();
         const QString customXml=QDir(dmeDataDir()).filePath(resource+"/items.xml");
         const QString baseXml=QDir(dmeDataDir()).filePath(QString::number(version)+"/items.xml");
@@ -245,6 +259,7 @@ QVariantMap resolveClient(const QVariantMap &profile) {
     const auto manualFlags=profile.value("flags").toMap();
     for(auto it=manualFlags.cbegin();it!=manualFlags.cend();++it)if(!it.value().isNull())flags[it.key()]=it.value().toBool();
     QString fingerprint=QString::number(version)+":"+profile.value("resourceKey").toString();
+    if (itemSource == "blacktek") fingerprint += QStringLiteral("|blacktek");
     for(auto it=paths.cbegin();it!=paths.cend();++it)fingerprint+="|"+fileStamp(it.value().toString());
     for(auto it=flags.cbegin();it!=flags.cend();++it)fingerprint+="|"+it.key()+":"+it.value().toString();
     return {{"success",errors.isEmpty()},{"paths",paths},{"errors",errors},{"flags",flags},
@@ -310,7 +325,7 @@ std::shared_ptr<ClientPreparedState> ClientLoadService::prepare(const QString &k
             throw std::runtime_error(messages.join("\n").toStdString());
         }
         const auto paths=state->report.value("paths").toMap(),flags=state->report.value("flags").toMap();
-        state->datPath=paths.value("dat").toString();state->sprPath=paths.value("spr").toString();state->otbPath=paths.value("otb").toString();
+        state->datPath=paths.value("dat").toString();state->sprPath=paths.value("spr").toString();state->otbPath=paths.value("otb").toString();state->tomlPath=paths.value("toml").toString();
         state->otfiFound=state->report.value("hasOtfi").toBool() || !profile.value("flags").toMap().isEmpty();
         state->metadataName=QFileInfo(state->datPath).fileName();state->spritesName=QFileInfo(state->sprPath).fileName();
         state->extended=flags.value("extended").toBool();state->alpha=flags.value("alpha").toBool();
@@ -343,7 +358,10 @@ std::shared_ptr<ClientPreparedState> ClientLoadService::prepare(const QString &k
         check(); job->stage.store(2); job->progress.store(25);
         if (!spr.loadFile(state->sprPath, 0, state->extended, state->alpha)) throw std::runtime_error(spr.errorString().toStdString());
         check(); job->stage.store(3); job->progress.store(35);
-        if (!otb.loadFile(state->otbPath)) throw std::runtime_error(otb.errorString().toStdString());
+        const bool itemsLoaded = profile.value("itemSource").toString() == "blacktek"
+            ? otb.loadTomlFile(state->tomlPath, version)
+            : otb.loadFile(state->otbPath);
+        if (!itemsLoaded) throw std::runtime_error(otb.errorString().toStdString());
         }
         const auto checkSprites=[&](const auto &definitions) {
             for(const auto &item:definitions)for(const auto sprite:item.sprite_ids)
@@ -398,6 +416,7 @@ std::shared_ptr<ClientPreparedState> ClientLoadService::prepare(const QString &k
         state->otb.m_buildNumber = std::move(otb.m_buildNumber);
         state->otb.m_loaded = std::move(otb.m_loaded);
         state->otb.m_errorString = std::move(otb.m_errorString);
+        state->otb.m_itemSource = std::move(otb.m_itemSource);
         state->spr.m_offsets = std::move(spr.m_offsets);
         state->spr.m_signature = std::move(spr.m_signature);
         state->spr.m_spriteCount = std::move(spr.m_spriteCount);
@@ -521,6 +540,7 @@ void ClientLoadService::publish(quint64 id, const std::shared_ptr<ClientPrepared
     otb.m_buildNumber = std::move(state->otb.m_buildNumber);
     otb.m_loaded = std::move(state->otb.m_loaded);
     otb.m_errorString = std::move(state->otb.m_errorString);
+    otb.m_itemSource = std::move(state->otb.m_itemSource);
     spr.m_offsets = std::move(state->spr.m_offsets);
     spr.m_signature = std::move(state->spr.m_signature);
     spr.m_spriteCount = std::move(state->spr.m_spriteCount);
@@ -565,6 +585,7 @@ void ClientLoadService::publish(quint64 id, const std::shared_ptr<ClientPrepared
     emit dat.clientVersionChanged(); emit dat.itemCountChanged(); emit dat.loadedChanged();
     emit spr.spriteCountChanged(); emit spr.itemImagesChanged(); emit spr.loadedChanged();
     emit xml.loadedChanged(); emit otb.itemCountChanged(); emit otb.loadedChanged();
+    emit otb.sourceChanged();
     ++brushes.m_revision; emit brushes.brushesChanged();
     emit creatures.countChanged(); emit creatures.errorStringChanged();
     tiles.m_preparedPublication = false; ++tiles.m_revision;

@@ -17,6 +17,14 @@ set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
 find_package(Qt6 6.10 COMPONENTS Core Gui Qml Quick ShaderTools Network Widgets Concurrent Sql REQUIRED)
+find_package(tomlplusplus CONFIG QUIET)
+if(NOT TARGET tomlplusplus::tomlplusplus)
+    include(FetchContent)
+    FetchContent_Declare(tomlplusplus
+        URL https://github.com/marzer/tomlplusplus/archive/refs/tags/v3.4.0.tar.gz
+        URL_HASH SHA256=8517f65938a4faae9ccf8ebb36631a38c1cadfb5efa85d9a72e15b9e97d25155)
+    FetchContent_MakeAvailable(tomlplusplus)
+endif()
 if(NOT TARGET Qt6::GuiPrivate)
     find_package(Qt6 REQUIRED COMPONENTS GuiPrivate)
 endif()
@@ -84,6 +92,7 @@ target_link_libraries(OTFormats
         Qt6::Gui
         Qt6::Sql
         Qt6::Qml
+        tomlplusplus::tomlplusplus
 )
 
 target_include_directories(OTFormats PUBLIC libs/otformats)
