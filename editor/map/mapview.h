@@ -653,6 +653,8 @@ public:
     Q_INVOKABLE QVariantList contextItemPath() const;
     Q_INVOKABLE QVariantList contextContainerItems(const QVariantList &path) const;
     Q_INVOKABLE bool addContextContainerItem(const QVariantList &path, int serverId);
+    Q_INVOKABLE bool applyContainerItemProperties(const QVariantList &path,
+                                                  const QVariantMap &props);
     Q_INVOKABLE bool removeContextContainerItem(const QVariantList &path, int childIndex);
     Q_INVOKABLE bool moveContextContainerItem(const QVariantList &path,
                                               int childIndex, int delta);

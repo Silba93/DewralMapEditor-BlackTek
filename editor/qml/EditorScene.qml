@@ -918,14 +918,17 @@ DmeWindow {
     QtObject {
         id: propsDialog
         property var contextOverride: null
+        property var contextPathOverride: []
 
         function open() {
             contextOverride = null;
+            contextPathOverride = [];
             if (!propsDialogLoader.ensureLoaded()) return false;
             propsDialogLoader.item["open"]();
         }
-        function openWithContext(itemContext) {
+        function openWithContext(itemContext, itemPath) {
             contextOverride = itemContext;
+            contextPathOverride = itemPath ? itemPath.slice(0) : [];
             if (!propsDialogLoader.ensureLoaded()) return false;
             propsDialogLoader.item["open"]();
         }

@@ -12,6 +12,8 @@ DmeDialog {
     required property var ctx
     property var mapCtrl: null
     property var containerDialog: null
+    property var contextPath: []
+    readonly property bool containedItem: contextPath.length > 1
 
     title: hasCreature
            ? "Creature & Spawn Properties"
@@ -108,6 +110,15 @@ DmeDialog {
     }
 
     function applyAndClose() {
+        if (containedItem) {
+            const props = {actionId: aidField.value, uniqueId: uidField.value};
+            if (isWritable)
+                props.text = textField.text;
+            if (mapCtrl)
+                mapCtrl.applyContainerItemProperties(contextPath, props);
+            close();
+            return;
+        }
         if (mapCtrl && ctx.hasItem === true) {
             var p = {
                 "actionId": aidField.value,
@@ -198,13 +209,13 @@ DmeDialog {
             }
 
             Text {
-                visible: propsDialog.ctx.hasItem === true
+                visible: !propsDialog.containedItem && propsDialog.ctx.hasItem === true
                 text: propsDialog.ctx.subtypeLabel || "Count"
                 color: "#999"
                 font.pixelSize: 11
             }
             Row {
-                visible: propsDialog.ctx.hasItem === true
+                visible: !propsDialog.containedItem && propsDialog.ctx.hasItem === true
                 DmeSpinBox {
                     id: countField
                     visible: !propsDialog.isFluid
@@ -249,14 +260,14 @@ DmeDialog {
             }
 
             Text {
-                visible: propsDialog.isTeleport
+                visible: !propsDialog.containedItem && propsDialog.isTeleport
                 text: "Destination"
                 color: "#999"
                 font.pixelSize: 11
             }
             Row {
                 spacing: 6
-                visible: propsDialog.isTeleport
+                visible: !propsDialog.containedItem && propsDialog.isTeleport
                 DmeSpinBox {
                     id: teleX
                     objectName: "teleportXField"
@@ -379,26 +390,26 @@ DmeDialog {
             }
 
             Text {
-                visible: propsDialog.ctx.hasItem === true
+                visible: !propsDialog.containedItem && propsDialog.ctx.hasItem === true
                 text: "Description"
                 color: "#999"
                 font.pixelSize: 11
             }
             DmeTextField {
                 id: descriptionField
-                visible: propsDialog.ctx.hasItem === true
+                visible: !propsDialog.containedItem && propsDialog.ctx.hasItem === true
                 width: parent.width
                 placeholderText: "Optional item description"
             }
 
             Text {
-                visible: propsDialog.ctx.hasItem === true
+                visible: !propsDialog.containedItem && propsDialog.ctx.hasItem === true
                 text: "Depot ID / Door ID / Tier"
                 color: "#999"
                 font.pixelSize: 11
             }
             Row {
-                visible: propsDialog.ctx.hasItem === true
+                visible: !propsDialog.containedItem && propsDialog.ctx.hasItem === true
                 spacing: 6
                 DmeSpinBox {
                     id: depotField
@@ -509,13 +520,13 @@ DmeDialog {
             }
 
             Text {
-                visible: propsDialog.ctx.customAttributesSupported === true
+                visible: !propsDialog.containedItem && propsDialog.ctx.customAttributesSupported === true
                 text: "Custom attributes (OTBM 4)"
                 color: "#999"
                 font.pixelSize: 11
             }
             Rectangle {
-                visible: propsDialog.ctx.customAttributesSupported === true
+                visible: !propsDialog.containedItem && propsDialog.ctx.customAttributesSupported === true
                 width: 456
                 height: 116
                 color: (("#242424"))
@@ -603,7 +614,7 @@ DmeDialog {
                 }
             }
             DmeButton {
-                visible: propsDialog.ctx.customAttributesSupported === true
+                visible: !propsDialog.containedItem && propsDialog.ctx.customAttributesSupported === true
                 text: "Add Attribute"
                 width: 110
                 onClicked: attributeModel.append({
@@ -632,7 +643,8 @@ DmeDialog {
                         propsDialog.close();
                         if (propsDialog.containerDialog)
                             propsDialog.containerDialog.open(
-                                propsDialog.mapCtrl.contextItemPath(),
+                                propsDialog.containedItem ? propsDialog.contextPath
+                                    : propsDialog.mapCtrl.contextItemPath(),
                                 propsDialog.ctx.name || "Container");
                     }
                 }

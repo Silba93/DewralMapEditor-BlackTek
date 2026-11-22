@@ -6,5 +6,6 @@ ContainerDialog {
     required property var environment
 
     mapCtrl: environment.workspace.mapView
+    propertiesDialog: environment.propsDialog
     onClosed: Qt.callLater(() => environment.containerLoader.active = false)
 }

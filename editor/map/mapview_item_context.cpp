@@ -595,6 +595,67 @@ bool MapView::addContextContainerItem(const QVariantList &pathValues, int server
     return changed;
 }
 
+bool MapView::applyContainerItemProperties(const QVariantList &pathValues,
+                                           const QVariantMap &props)
+{
+    if (!m_otbm || props.isEmpty()) return false;
+
+    std::vector<int> path;
+    path.reserve(static_cast<size_t>(pathValues.size()));
+    for (const QVariant &value : pathValues) path.push_back(value.toInt());
+    if (path.size() < 2) return false;
+
+    bool changed = false;
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_dataMutex);
+        const OtbmMapItem *item = m_otbm->itemAtPath(
+            m_itemController.contextX(), m_itemController.contextY(),
+            m_navigationController.floor(), path);
+        if (!item) return false;
+
+        if (props.contains(QStringLiteral("text"))) {
+            const int clientId = m_otb
+                ? m_otb->clientIdForServerId(item->server_id) : 0;
+            const ClientItem *clientItem = m_dat && clientId > 0
+                ? m_dat->itemByClientId(static_cast<uint16_t>(clientId)) : nullptr;
+            const QString currentText = item->extra ? item->extra->text : QString();
+            if ((!clientItem || !clientItem->has(ClientProperty::Writable))
+                && currentText.isEmpty())
+                return false;
+        }
+
+        m_otbm->beginUndoGroup();
+        if (props.contains(QStringLiteral("actionId"))) {
+            const auto actionId = static_cast<uint16_t>(
+                std::clamp(props.value(QStringLiteral("actionId")).toInt(), 0, 65535));
+            changed |= m_otbm->setItemActionIdAtPath(
+                m_itemController.contextX(), m_itemController.contextY(),
+                m_navigationController.floor(), path, actionId);
+        }
+        if (props.contains(QStringLiteral("uniqueId"))) {
+            const auto uniqueId = static_cast<uint16_t>(
+                std::clamp(props.value(QStringLiteral("uniqueId")).toInt(), 0, 65535));
+            changed |= m_otbm->setItemUniqueIdAtPath(
+                m_itemController.contextX(), m_itemController.contextY(),
+                m_navigationController.floor(), path, uniqueId);
+        }
+        if (props.contains(QStringLiteral("text"))) {
+            changed |= m_otbm->setItemTextAtPath(
+                m_itemController.contextX(), m_itemController.contextY(),
+                m_navigationController.floor(), path,
+                props.value(QStringLiteral("text")).toString());
+        }
+        m_otbm->endUndoGroup();
+        if (changed) {
+            onTileEdited(m_itemController.contextX(), m_itemController.contextY(),
+                         m_navigationController.floor());
+            flushEditedChunksLocked();
+        }
+    }
+    if (changed) refreshAfterEdit(0);
+    return changed;
+}
+
 bool MapView::removeContextContainerItem(const QVariantList &pathValues, int childIndex)
 {
     if (!m_otbm) return false;

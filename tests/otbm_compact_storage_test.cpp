@@ -123,6 +123,13 @@ int main(int argc, char **argv)
     if (!require(source.addContainerChild(100, 100, 7, {0}, 2000),
                  "Could not add a container child"))
         return EXIT_FAILURE;
+    source.beginUndoGroup();
+    if (!require(source.setItemActionIdAtPath(100, 100, 7, {0, 0}, 444)
+                     && source.setItemUniqueIdAtPath(100, 100, 7, {0, 0}, 555)
+                     && source.setItemTextAtPath(100, 100, 7, {0, 0}, QStringLiteral("nested")),
+                 "Could not edit contained item properties"))
+        return EXIT_FAILURE;
+    source.endUndoGroup();
     if (!require(source.addItem(101, 100, 7, 1987)
                      && source.addItem(101, 100, 7, 1988)
                      && source.addItem(101, 100, 7, 1989),
@@ -180,7 +187,11 @@ int main(int argc, char **argv)
                  "Item text did not survive save/load"))
         return EXIT_FAILURE;
     if (!require(item.children() && item.children()->size() == 1
-                     && item.children()->front().server_id == 2000,
+                     && item.children()->front().server_id == 2000
+                     && item.children()->front().actionId() == 444
+                     && item.children()->front().uniqueId() == 555
+                     && item.children()->front().extra
+                     && item.children()->front().extra->text == QStringLiteral("nested"),
                  "Container contents did not survive save/load"))
         return EXIT_FAILURE;
     const OtbmTile *multiItemTile = loaded.tileAt(101, 100, 7);

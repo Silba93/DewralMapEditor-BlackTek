@@ -115,6 +115,22 @@ Item {
             compare(dialog.items[0].serverId, 9249);
         }
 
+        function test_propertiesPassesSelectedItemPath() {
+            let openedItem = null;
+            let openedPath = null;
+            dialog.propertiesDialog = {
+                openWithContext: function(item, path) {
+                    openedItem = item;
+                    openedPath = path;
+                }
+            };
+            openContainer();
+            mouseClick(child("containerPropertiesButton"));
+            tryCompare(dialog, "opened", false);
+            compare(openedItem.serverId, 9249);
+            compare(openedPath, [3, 0]);
+        }
+
         function test_searchByIdAndEnter() {
             openContainer();
             openPicker();
