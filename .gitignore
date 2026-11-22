@@ -1,5 +1,6 @@
 # ---- Build output ----
 /build/
+/build-vs*/
 build*/
 /dist/
 /release/
@@ -65,3 +66,5 @@ Thumbs.db
 .DS_Store
 /tmp
 *.lnk
+/.vs
+*.bat
