@@ -8,6 +8,7 @@ DmeDialog {
     id: dialog
 
     required property var mapCtrl
+    property var propertiesDialog: null
     property var currentPath: []
     property var rootPath: []
     property var items: []
@@ -73,6 +74,13 @@ DmeDialog {
             ? selectedItem.name : "Container " + selectedItem.serverId
         ]);
         refresh();
+    }
+
+    function openSelectedProperties() {
+        if (!selectedItem || !propertiesDialog)
+            return;
+        close();
+        propertiesDialog.openWithContext(selectedItem, selectedItem.path);
     }
 
     function goBack() {
@@ -253,6 +261,13 @@ DmeDialog {
                          && (dialog.selectedItem.groupName === "Container"
                              || dialog.selectedItem.childCount > 0)
                 onClicked: dialog.openSelectedContainer()
+            }
+            DmeButton {
+                objectName: "containerPropertiesButton"
+                text: "Properties"
+                width: 90
+                enabled: dialog.selectedItem !== null
+                onClicked: dialog.openSelectedProperties()
             }
             DmeButton {
                 text: "Move Up"
