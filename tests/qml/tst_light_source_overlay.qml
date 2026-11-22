@@ -41,6 +41,7 @@ Item {
         function init() {
             prefs.showTooltips = false;
             prefs.showLightSources = false;
+            map.tileSize = 24;
             map.exitX = 1;
             overlay.refreshData(true);
         }
@@ -55,6 +56,18 @@ Item {
             prefs.showTooltips = true;
             compare(overlay.entries.length, 0);
         }
+        function test_light_sources_only_at_zoomed_out_levels() {
+            map.tileSize = 32;
+            prefs.showLightSources = true;
+            compare(overlay.visible, false);
+            compare(overlay.entries.length, 0);
+            map.tileSize = 28;
+            compare(overlay.visible, true);
+            compare(overlay.entries.length, 1);
+            map.tileSize = 29;
+            compare(overlay.visible, false);
+            compare(overlay.entries.length, 0);
+        }
         function test_refresh_after_source_moves() {
             prefs.showLightSources = true;
             map.exitX = 2;
@@ -67,13 +80,12 @@ Item {
             const original = overlay.entries;
             const before = map.scans;
             for (let i = 0; i < 200; ++i) {
-                map.origin = i / 200;
+                map.origin = i / 100;
                 map.contentUpdated();
             }
             compare(map.scans, before);
             compare(overlay.currentOriginX, map.origin);
-            wait(130);
-            compare(map.scans, before + 1);
+            tryCompare(map, "scans", before + 1);
             verify(overlay.entries === original);
             map.origin = 0;
         }
