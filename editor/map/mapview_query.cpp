@@ -869,6 +869,20 @@ QVariantList MapView::mapOverlayData(bool includeTooltips,
         if (output.size() - lightSourceCount >= kOverlayLimit) return output;
     }
 
+    if (includeTooltips) {
+        for (const OtbmNote &note : m_otbm->notes()) {
+            if (note.z != m_navigationController.floor()
+                || note.x < minX || note.x > maxX
+                || note.y < minY || note.y > maxY) continue;
+            output.append(QVariantMap{{QStringLiteral("kind"), QStringLiteral("note")},
+                                      {QStringLiteral("x"), note.x},
+                                      {QStringLiteral("y"), note.y},
+                                      {QStringLiteral("name"), QString()},
+                                      {QStringLiteral("text"), note.text}});
+            if (output.size() - lightSourceCount >= kOverlayLimit) return output;
+        }
+    }
+
     if (includeHouses) {
         for (const OtbmHouse &house : m_otbm->houses()) {
             if ((house.entryX == 0 && house.entryY == 0 && house.entryZ == 0)

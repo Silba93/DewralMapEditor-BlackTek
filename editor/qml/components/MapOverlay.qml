@@ -428,6 +428,7 @@ Item {
         target: Backend.otbmReader
         function onMapChanged() { overlay.refreshData(true); }
         function onLoadedChanged() { overlay.refreshData(true); }
+        function onNotesChanged() { overlay.refreshData(true); }
     }
 
     Connections {

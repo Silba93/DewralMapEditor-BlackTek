@@ -258,6 +258,11 @@ QVariantMap MapView::contextInfo() const
         m.insert(QStringLiteral("door"), false);
         m.insert(QStringLiteral("doorOpen"), false);
     }
+    m.insert(QStringLiteral("noteText"),
+             m_otbm ? m_otbm->noteText(m_itemController.contextX(),
+                                       m_itemController.contextY(),
+                                       m_navigationController.floor())
+                    : QString());
 
     QVariantMap brushes;
     QVariantList collections;

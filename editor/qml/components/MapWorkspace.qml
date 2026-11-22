@@ -59,6 +59,48 @@ Item {
         return changed;
     }
 
+    function openNotesDialogAtContext() {
+        noteDialogLoader.active = true;
+        noteDialogLoader.item.openAt(mapArea.ctx.x, mapArea.ctx.y, mapArea.ctx.z,
+                                     mapArea.ctx.noteText || "");
+    }
+
+    function openNoteAtContext() {
+        const state = Backend.otbmReader.prepareNotes();
+        if (state.enabled && state.exists && state.readable) {
+            openNotesDialogAtContext();
+            return;
+        }
+        notesSetupDialog.targetPath = state.path;
+        notesSetupDialog.canCreate = !state.exists && state.path !== "";
+        notesSetupDialog.message = state.path === ""
+            ? (state.error || "Save the map before creating its annotations file.")
+            : (state.exists
+                ? "An annotations file already exists here, but it could not be loaded. It was left untouched."
+                : (state.enabled
+                    ? "The annotations file is missing. Recreate it now at this path before editing notes?"
+                    : "Create an empty annotations file now at this path before editing notes?"));
+        notesSetupDialog.errorMessage = state.exists ? state.error : "";
+        notesSetupDialog.open();
+    }
+
+    function createNotesAndOpenDialog() {
+        if (Backend.otbmReader.notesFilePath() !== notesSetupDialog.targetPath) {
+            notesSetupDialog.errorMessage =
+                "The map path changed. Close this prompt and open it again.";
+            notesSetupDialog.canCreate = false;
+            return;
+        }
+        if (!Backend.otbmReader.createNotesFile()) {
+            notesSetupDialog.errorMessage = Backend.otbmReader.errorString
+                || "Could not create the annotations file.";
+            notesSetupDialog.canCreate = false;
+            return;
+        }
+        notesSetupDialog.close();
+        openNotesDialogAtContext();
+    }
+
 
 
     Loader {
@@ -388,6 +430,12 @@ Item {
                 onTriggered: workspace.pasteTeleportLocation()
             }
             DmeMenuItem {
+                text: mapArea.ctx.noteText !== "" ? "Edit Note" : "Add Note"
+                visible: Backend.otbmReader.loaded
+                height: visible ? implicitHeight : 0
+                onTriggered: workspace.openNoteAtContext()
+            }
+            DmeMenuItem {
                 text: "Go To Destination"
                 visible: mapArea.ctx.teleport === true && mapArea.ctx.hasTeleportDest === true
                 height: visible ? implicitHeight : 0
@@ -503,6 +551,63 @@ Item {
             tilesetStore: Backend.tilesetStore
             onCollectionCreated: (name, firstServerId) =>
                 workspace.paletteNavigator.showItemLocation("collection", name, firstServerId)
+        }
+
+        Loader {
+            id: noteDialogLoader
+            active: false
+            sourceComponent: NotesDialog {
+                mapCtrl: mapView
+                onClosed: Qt.callLater(() => noteDialogLoader.active = false)
+            }
+        }
+
+        DmeDialog {
+            id: notesSetupDialog
+            title: "Create map annotations"
+            property string targetPath: ""
+            property string message: ""
+            property string errorMessage: ""
+            property bool canCreate: false
+            width: 440
+
+            contentItem: Column {
+                spacing: 10
+                Text {
+                    width: parent.width
+                    text: notesSetupDialog.message
+                    color: "#d0d0d0"
+                    wrapMode: Text.Wrap
+                }
+                Text {
+                    width: parent.width
+                    visible: notesSetupDialog.targetPath !== ""
+                    text: notesSetupDialog.targetPath
+                    color: "#9ecbff"
+                    wrapMode: Text.WrapAnywhere
+                }
+                Text {
+                    width: parent.width
+                    visible: notesSetupDialog.errorMessage !== ""
+                    text: notesSetupDialog.errorMessage
+                    color: "#f85149"
+                    wrapMode: Text.Wrap
+                }
+                Row {
+                    spacing: 8
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    DmeButton {
+                        text: "Create"
+                        enabled: notesSetupDialog.canCreate
+                        variant: "primary"
+                        onClicked: workspace.createNotesAndOpenDialog()
+                    }
+                    DmeButton {
+                        text: "Cancel"
+                        onClicked: notesSetupDialog.close()
+                    }
+                }
+            }
         }
 
         DmeDialog {
