@@ -805,40 +805,7 @@ QVariantList MapView::mapOverlayData(bool includeTooltips,
 
     std::lock_guard<std::recursive_mutex> lock(m_dataMutex);
 
-    if (includeWaypoints || includeTooltips) for (const OtbmWaypoint &waypoint : m_otbm->waypoints()) {
-        if (waypoint.z != m_navigationController.floor() || waypoint.x < minX || waypoint.x > maxX
-            || waypoint.y < minY || waypoint.y > maxY) {
-            continue;
-        }
-
-        QVariantMap entry;
-        entry.insert(QStringLiteral("kind"), QStringLiteral("waypoint"));
-        entry.insert(QStringLiteral("x"), waypoint.x);
-        entry.insert(QStringLiteral("y"), waypoint.y);
-        entry.insert(QStringLiteral("name"), waypoint.name);
-        entry.insert(QStringLiteral("text"),
-                     includeTooltips
-                         ? QStringLiteral("wp: %1").arg(waypoint.name)
-                         : QString());
-        output.append(entry);
-        if (output.size() >= kOverlayLimit) return output;
-    }
-
-    if (includeHouses) {
-        for (const OtbmHouse &house : m_otbm->houses()) {
-            if ((house.entryX == 0 && house.entryY == 0 && house.entryZ == 0)
-                || house.entryZ != m_navigationController.floor()
-                || house.entryX < minX || house.entryX > maxX
-                || house.entryY < minY || house.entryY > maxY) continue;
-            output.append(QVariantMap{{QStringLiteral("kind"), QStringLiteral("house_exit")},
-                                      {QStringLiteral("x"), house.entryX},
-                                      {QStringLiteral("y"), house.entryY},
-                                      {QStringLiteral("name"), house.name},
-                                      {QStringLiteral("text"), QStringLiteral("EXIT")}});
-            if (output.size() >= kOverlayLimit) return output;
-        }
-    }
-
+    // Visible light sources must not consume the metadata overlay budget.
     if (includeLightSources && m_otb && m_dat) {
         const int minChunkX = floorDiv(minX, kChunkTiles);
         const int minChunkY = floorDiv(minY, kChunkTiles);
@@ -874,11 +841,46 @@ QVariantList MapView::mapOverlayData(bool includeTooltips,
                             entry.insert(QStringLiteral("green"), ((lightColor / 6) % 6) * 51);
                             entry.insert(QStringLiteral("blue"), (lightColor % 6) * 51);
                             output.append(entry);
-                            if (output.size() >= kOverlayLimit) return output;
                         }
                     }
                 }
             }
+        }
+    }
+
+    const auto lightSourceCount = output.size();
+
+    if (includeWaypoints || includeTooltips) for (const OtbmWaypoint &waypoint : m_otbm->waypoints()) {
+        if (waypoint.z != m_navigationController.floor() || waypoint.x < minX || waypoint.x > maxX
+            || waypoint.y < minY || waypoint.y > maxY) {
+            continue;
+        }
+
+        QVariantMap entry;
+        entry.insert(QStringLiteral("kind"), QStringLiteral("waypoint"));
+        entry.insert(QStringLiteral("x"), waypoint.x);
+        entry.insert(QStringLiteral("y"), waypoint.y);
+        entry.insert(QStringLiteral("name"), waypoint.name);
+        entry.insert(QStringLiteral("text"),
+                     includeTooltips
+                         ? QStringLiteral("wp: %1").arg(waypoint.name)
+                         : QString());
+        output.append(entry);
+        if (output.size() - lightSourceCount >= kOverlayLimit) return output;
+    }
+
+    if (includeHouses) {
+        for (const OtbmHouse &house : m_otbm->houses()) {
+            if ((house.entryX == 0 && house.entryY == 0 && house.entryZ == 0)
+                || house.entryZ != m_navigationController.floor()
+                || house.entryX < minX || house.entryX > maxX
+                || house.entryY < minY || house.entryY > maxY) continue;
+            output.append(QVariantMap{{QStringLiteral("kind"), QStringLiteral("house_exit")},
+                                      {QStringLiteral("x"), house.entryX},
+                                      {QStringLiteral("y"), house.entryY},
+                                      {QStringLiteral("name"), house.name},
+                                      {QStringLiteral("text"), QStringLiteral("EXIT")}});
+            if (output.size() - lightSourceCount >= kOverlayLimit) return output;
         }
     }
 
@@ -937,7 +939,7 @@ QVariantList MapView::mapOverlayData(bool includeTooltips,
                         containerEntry.insert(QStringLiteral("itemCount"),
                                               static_cast<int>(children->size()));
                         output.append(containerEntry);
-                        if (output.size() >= kOverlayLimit) return output;
+                        if (output.size() - lightSourceCount >= kOverlayLimit) return output;
                         continue;
                     }
                     const bool special =
@@ -985,7 +987,7 @@ QVariantList MapView::mapOverlayData(bool includeTooltips,
                 entry.insert(QStringLiteral("text"),
                              itemTooltips.join(QStringLiteral("\n\n")));
                 output.append(entry);
-                if (output.size() >= kOverlayLimit) return output;
+                if (output.size() - lightSourceCount >= kOverlayLimit) return output;
             }
         }
     }

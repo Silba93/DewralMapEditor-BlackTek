@@ -32,11 +32,14 @@ Item {
         ? Math.max(0, settings.creatureNamesMinimumZoom) : 25
     readonly property bool creaturesVisible: !!mapCtrl && mapCtrl.showCreatures === true
         && currentTileSize / 32 * 100 >= creatureNamesMinimumZoom
+    readonly property bool lightSourcesVisible: settings.showLightSources
+        && currentTileSize < 32 * 0.9
+    onLightSourcesVisibleChanged: refreshData(true)
     readonly property real canvasMargin: 64
 
     clip: true
     visible: settings.showClientBox || settings.showTooltips || settings.showWaypoints
-             || settings.showHouses || settings.showLightSources || creaturesVisible
+             || settings.showHouses || lightSourcesVisible || creaturesVisible
 
     function refreshData(force) {
         if (!mapCtrl)
@@ -53,14 +56,14 @@ Item {
                 + Math.ceil(height / currentTileSize) + ":"
                 + currentTileSize + ":" + tooltipsVisible + ":"
                 + settings.showWaypoints + ":" + settings.showHouses + ":"
-                + settings.showLightSources;
+                + lightSourcesVisible;
         if (!force && key === dataKey)
             return;
 
         dataKey = key;
         const next = mapCtrl.mapOverlayData(tooltipsVisible,
                                          settings.showWaypoints, settings.showHouses,
-                                         settings.showLightSources);
+                                         lightSourcesVisible);
         const nextKey = JSON.stringify(next);
         const moved = Math.abs(originX - paintedOriginX) * currentTileSize > canvasMargin / 2
                    || Math.abs(originY - paintedOriginY) * currentTileSize > canvasMargin / 2;
@@ -162,7 +165,7 @@ Item {
         y: -overlay.canvasMargin
            + (overlay.paintedOriginY - overlay.currentOriginY) * overlay.currentTileSize
         visible: overlay.settings.showTooltips || overlay.settings.showWaypoints
-                 || overlay.settings.showHouses || overlay.settings.showLightSources
+                 || overlay.settings.showHouses || overlay.lightSourcesVisible
 
         onPaint: {
             const ctx = getContext("2d");
@@ -179,7 +182,7 @@ Item {
                     overlay.drawWaypoint(ctx, centerX, centerY);
                 if (entry.kind === "house_exit" && overlay.settings.showHouses && !overlay.mapCtrl.modernZones)
                     overlay.drawHouseExit(ctx, centerX, centerY);
-                if (entry.kind === "light_source" && overlay.settings.showLightSources)
+                if (entry.kind === "light_source" && overlay.lightSourcesVisible)
                     overlay.drawLightSource(ctx, entry.x - overlay.paintedOriginX,
                                             entry.y - overlay.paintedOriginY,
                                             entry.intensity, entry.red, entry.green,
@@ -432,7 +435,6 @@ Item {
         function onShowTooltipsChanged() { overlay.refreshData(true); }
         function onShowWaypointsChanged() { overlay.refreshData(true); }
         function onShowHousesChanged() { overlay.refreshData(true); }
-        function onShowLightSourcesChanged() { overlay.refreshData(true); }
     }
 
     Timer {
