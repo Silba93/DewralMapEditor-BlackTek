@@ -13,6 +13,7 @@ Rectangle {
     readonly property int commandHeight: 32
     required property var mapView
     property var settings
+    property var zoneEditorDialog
     property bool brushDragActive: false
     signal toolsDockDragStarted()
     signal toolsDoorsRequested()
@@ -188,6 +189,10 @@ Rectangle {
             Behavior on opacity { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
             Behavior on width { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
             mapView: root.mapView
+            onZonesRequested: if (root.zoneEditorDialog) root.zoneEditorDialog.open()
+            onBlackTekZonePresetRequested: preset => {
+                if (root.zoneEditorDialog) root.zoneEditorDialog.startWorldPresetPainting(preset)
+            }
             onDoorsRequested: root.toolsDoorsRequested()
             onDockDragStarted: root.toolsDockDragStarted()
             onDockDragMoved: (x,y) => root.brushDockDragMoved(x,y)

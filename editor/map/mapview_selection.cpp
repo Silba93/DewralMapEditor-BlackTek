@@ -21,7 +21,52 @@
 #include <cstring>
 #include <functional>
 #include <limits>
+#include <tuple>
 #include <vector>
+
+namespace {
+bool appendTomlString(QString &out, const QString &value)
+{
+    out += QLatin1Char('"');
+    for (const QChar character : value) {
+        const ushort code = character.unicode();
+        if (code < 0x20 || code == 0x7f) return false;
+        if (character == QLatin1Char('"') || character == QLatin1Char('\\'))
+            out += QLatin1Char('\\');
+        out += character;
+    }
+    out += QLatin1Char('"');
+    return true;
+}
+
+bool isValidZoneFlag(const QString &flag)
+{
+    static const QSet<QString> allowed{
+        QStringLiteral("protection"), QStringLiteral("nopvp"), QStringLiteral("pvp"),
+        QStringLiteral("nologout"), QStringLiteral("no_experience"), QStringLiteral("no_trading"),
+        QStringLiteral("no_transaction"), QStringLiteral("no_party"), QStringLiteral("no_drop"),
+        QStringLiteral("no_death"), QStringLiteral("no_death_penalty"), QStringLiteral("no_equipment_loss"),
+        QStringLiteral("no_summons"), QStringLiteral("ghost"), QStringLiteral("no_pathfinding"),
+        QStringLiteral("no_walk"), QStringLiteral("no_monsters"), QStringLiteral("no_npcs")
+    };
+    return allowed.contains(flag);
+}
+
+bool isValidZoneTrigger(const QString &trigger)
+{
+    static const QSet<QString> allowed{
+        QStringLiteral("Spawn"), QStringLiteral("Enter"), QStringLiteral("Leave"),
+        QStringLiteral("Death"), QStringLiteral("Despawn"), QStringLiteral("Login"),
+        QStringLiteral("Logout"), QStringLiteral("Use"), QStringLiteral("Remove"),
+        QStringLiteral("Transform"), QStringLiteral("Speak"), QStringLiteral("Look"),
+        QStringLiteral("Summon"), QStringLiteral("Equip"), QStringLiteral("DeEquip"),
+        QStringLiteral("Attack"), QStringLiteral("Defend"), QStringLiteral("Idle"),
+        QStringLiteral("GainSkull"), QStringLiteral("LoseSkull"), QStringLiteral("Kill"),
+        QStringLiteral("EnterBattle"), QStringLiteral("LeaveBattle")
+    };
+    return allowed.contains(trigger);
+}
+}
 
 void MapView::deleteSelectedTop()
 {
@@ -722,6 +767,151 @@ QVariantMap MapView::aiSelectionContext() const
     result.insert(QStringLiteral("available_brushes"),
                   m_brushController.store()->groundBrushNames());
     return result;
+}
+
+QVariantMap MapView::createBlackTekZoneFromSelection(const QVariantMap &options)
+{
+    return createBlackTekZone(options);
+}
+
+QVariantMap MapView::createBlackTekZoneFromPositions(const QVariantMap &options,
+                                                     const QVariantList &positions)
+{
+    QSet<quint64> selected;
+    selected.reserve(positions.size());
+    for (const QVariant &value : positions) {
+        const QVariantMap position = value.toMap();
+        const int x = position.value(QStringLiteral("x")).toInt();
+        const int y = position.value(QStringLiteral("y")).toInt();
+        const int z = position.value(QStringLiteral("z")).toInt();
+        if (x < 0 || x > 65535 || y < 0 || y > 65535 || z < 0 || z > 255)
+            return {{QStringLiteral("error"), QStringLiteral("The brush footprint is outside BlackTek zone coordinate limits.")}};
+        selected.insert(selKey(x, y, z));
+    }
+    if (selected.isEmpty())
+        return {{QStringLiteral("error"), QStringLiteral("Paint at least one tile to create a zone.")}};
+    return createBlackTekZone(options, &selected);
+}
+
+QVariantMap MapView::createBlackTekZone(const QVariantMap &options, const QSet<quint64> *positions)
+{
+    const auto failure = [](const QString &error) {
+        return QVariantMap{{QStringLiteral("error"), error}};
+    };
+    if (!m_otbm || !m_otbm->isLoaded())
+        return failure(QStringLiteral("Load a map before creating a zone."));
+    if (!m_otbm->blackTekSpawnMode() || m_otbm->blackTekZoneFolder().isEmpty())
+        return failure(QStringLiteral("Link a BlackTek zones folder before creating a zone."));
+    const QSet<quint64> &selectedPositions = positions ? *positions : m_selectionController.selected();
+    if (selectedPositions.isEmpty())
+        return failure(QStringLiteral("Select the tiles for the zone first."));
+    std::lock_guard<std::recursive_mutex> dataLock(m_dataMutex);
+
+    const QString name = options.value(QStringLiteral("name")).toString().trimmed();
+    const QString type = options.value(QStringLiteral("type")).toString().trimmed().toLower();
+    if (name.isEmpty()) return failure(QStringLiteral("Enter a zone name."));
+    if (type != QStringLiteral("world") && type != QStringLiteral("monster")
+        && type != QStringLiteral("npc") && type != QStringLiteral("boss")
+        && type != QStringLiteral("item"))
+        return failure(QStringLiteral("Choose a valid zone type."));
+
+    QString quotedName;
+    if (!appendTomlString(quotedName, name))
+        return failure(QStringLiteral("The zone name cannot contain control characters."));
+
+    struct Point { int x; int y; int z; };
+    std::vector<Point> points;
+    points.reserve(static_cast<size_t>(selectedPositions.size()));
+    int minX = std::numeric_limits<int>::max();
+    int minY = std::numeric_limits<int>::max();
+    int minZ = std::numeric_limits<int>::max();
+    for (const quint64 key : selectedPositions) {
+        const Point point{selX(key), selY(key), selZ(key)};
+        if (point.x < 0 || point.x > 65535 || point.y < 0 || point.y > 65535
+            || point.z < 0 || point.z > 255)
+            return failure(QStringLiteral("The selection contains coordinates the BlackTek zone format cannot store."));
+        points.push_back(point);
+        minX = std::min(minX, point.x);
+        minY = std::min(minY, point.y);
+        minZ = std::min(minZ, point.z);
+    }
+    std::sort(points.begin(), points.end(), [](const Point &left, const Point &right) {
+        return std::tie(left.z, left.y, left.x) < std::tie(right.z, right.y, right.x);
+    });
+
+    QStringList flags;
+    QSet<QString> seenFlags;
+    for (const QVariant &value : options.value(QStringLiteral("flags")).toList()) {
+        const QString flag = value.toString();
+        if (!isValidZoneFlag(flag)) return failure(QStringLiteral("Unknown BlackTek zone flag: %1").arg(flag));
+        if (seenFlags.contains(flag)) return failure(QStringLiteral("The zone flag %1 was selected more than once.").arg(flag));
+        seenFlags.insert(flag);
+        flags.append(flag);
+    }
+
+    QString policy = options.value(QStringLiteral("policy")).toString().trimmed().toLower();
+    QString trigger = options.value(QStringLiteral("trigger")).toString().trimmed();
+    const bool isCreatureZone = type == QStringLiteral("monster") || type == QStringLiteral("npc")
+                             || type == QStringLiteral("boss");
+    if (isCreatureZone && policy.isEmpty()) policy = QStringLiteral("fixed");
+    if (isCreatureZone && policy != QStringLiteral("fixed") && policy != QStringLiteral("relative")
+        && policy != QStringLiteral("staged") && policy != QStringLiteral("triggered"))
+        return failure(QStringLiteral("Choose a valid spawn policy."));
+    if (type == QStringLiteral("npc")
+        && policy != QStringLiteral("fixed") && policy != QStringLiteral("relative"))
+        return failure(QStringLiteral("NPC zones support fixed or relative policies."));
+    if (policy == QStringLiteral("triggered") && !isValidZoneTrigger(trigger))
+        return failure(QStringLiteral("Choose a valid trigger for this triggered spawn zone."));
+    if (!trigger.isEmpty() && !isValidZoneTrigger(trigger))
+        return failure(QStringLiteral("Choose a valid BlackTek zone trigger."));
+
+    QString text = m_otbm->blackTekZoneFileText(
+        QDir(m_otbm->blackTekZoneFolder()).filePath(QStringLiteral("zones.toml")));
+    const QString sourceFile = QDir(m_otbm->blackTekZoneFolder()).filePath(QStringLiteral("zones.toml"));
+    const auto existing = BlackTekZones::parse(sourceFile, text.toUtf8());
+    if (!existing.errors.isEmpty())
+        return failure(QStringLiteral("Cannot add a zone because zones.toml is malformed: %1")
+                       .arg(existing.errors.join(QLatin1Char('\n'))));
+    for (const auto &zone : existing.zones)
+        if (zone.name.compare(name, Qt::CaseInsensitive) == 0)
+            return failure(QStringLiteral("A zone named %1 already exists in zones.toml.").arg(name));
+    for (const QVariant &entryValue : m_otbm->blackTekZoneEntries()) {
+        const QVariantMap entry = entryValue.toMap();
+        if (entry.value(QStringLiteral("name")).toString().compare(name, Qt::CaseInsensitive) == 0)
+            return failure(QStringLiteral("A zone named %1 already exists in %2.")
+                           .arg(name, entry.value(QStringLiteral("sourceFile")).toString()));
+    }
+
+    QString zone;
+    zone += QLatin1Char('[') + quotedName + QStringLiteral("]\n");
+    zone += QStringLiteral("positions = [");
+    for (size_t index = 0; index < points.size(); ++index) {
+        if (index) zone += QStringLiteral(", ");
+        const auto &point = points[index];
+        zone += QStringLiteral("\"%1:%2:%3\"").arg(point.x).arg(point.y).arg(point.z);
+    }
+    zone += QStringLiteral("]\n");
+    if (!flags.isEmpty()) {
+        zone += QStringLiteral("flags = [");
+        for (qsizetype index = 0; index < flags.size(); ++index) {
+            if (index) zone += QStringLiteral(", ");
+            zone += QLatin1Char('"') + flags[index] + QLatin1Char('"');
+        }
+        zone += QStringLiteral("]\n");
+    }
+    if (type != QStringLiteral("world")) {
+        zone += QStringLiteral("spawn_type = \"%1\"\n").arg(type);
+        if (type != QStringLiteral("item")) zone += QStringLiteral("policy = \"%1\"\n").arg(policy);
+        if (!trigger.isEmpty()) zone += QStringLiteral("trigger = \"%1\"\n").arg(trigger);
+    }
+
+    if (!text.isEmpty() && !text.endsWith(QLatin1Char('\n'))) text += QLatin1Char('\n');
+    if (!text.isEmpty()) text += QLatin1Char('\n');
+    text += zone;
+    const QString error = m_otbm->editBlackTekZoneFile(sourceFile, text);
+    if (!error.isEmpty()) return failure(error);
+    return {{QStringLiteral("name"), name}, {QStringLiteral("sourceFile"), sourceFile},
+            {QStringLiteral("x"), minX}, {QStringLiteral("y"), minY}, {QStringLiteral("z"), minZ}};
 }
 
 QVariantMap MapView::applyAiGroundPlan(const QVariantMap &plan,

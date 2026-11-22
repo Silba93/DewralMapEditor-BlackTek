@@ -14,6 +14,8 @@
 #include <QDebug>
 #include <QDir>
 #include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
 #include <QSet>
 #include <algorithm>
 #include <cmath>
@@ -48,6 +50,63 @@ void MapView::paintZoneAt(int cx, int cy)
             }
         }
     if (any && !m_editController.batching()) flushEditedChunksLocked();
+}
+
+void MapView::paintBlackTekZoneAt(int cx, int cy)
+{
+    if (!m_blackTekZonePaintActive) return;
+    const int floor = m_navigationController.floor();
+    for (int dy = -m_brushController.size(); dy <= m_brushController.size(); ++dy)
+        for (int dx = -m_brushController.size(); dx <= m_brushController.size(); ++dx) {
+            if (!brushCovers(dx, dy)) continue;
+            const int x = cx + dx, y = cy + dy;
+            if (x < 0 || x > 65535 || y < 0 || y > 65535) continue;
+            m_blackTekZoneStrokePositions.insert(selKey(x, y, floor));
+        }
+}
+
+QVariantList MapView::blackTekZonePaintPreview() const
+{
+    QVariantList positions;
+    positions.reserve(m_blackTekZoneStrokePositions.size());
+    for (quint64 key : m_blackTekZoneStrokePositions)
+        positions.append(QVariantMap{{"x", selX(key)}, {"y", selY(key)}, {"z", selZ(key)}});
+    return positions;
+}
+
+void MapView::commitBlackTekZoneStroke()
+{
+    if (!m_blackTekZonePaintActive || m_blackTekZoneStrokePositions.isEmpty()) return;
+    QVariantList positions;
+    positions.reserve(m_blackTekZoneStrokePositions.size());
+    for (quint64 key : m_blackTekZoneStrokePositions)
+        positions.append(QVariantMap{{"x", selX(key)}, {"y", selY(key)}, {"z", selZ(key)}});
+    m_blackTekZoneStrokePositions.clear();
+    emit blackTekZonePaintPreviewChanged();
+    QString error;
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_dataMutex);
+        if (m_otbm && m_blackTekZonePaintNew) {
+            if (m_brushController.eraseStroke()) {
+                error = QStringLiteral("Paint the zone footprint before erasing tiles.");
+            } else {
+                const QVariantMap result = createBlackTekZoneFromPositions(
+                    m_blackTekZonePaintOptions, positions);
+                error = result.value(QStringLiteral("error")).toString();
+                if (error.isEmpty()) {
+                    m_blackTekZonePaintSource = result.value(QStringLiteral("sourceFile")).toString();
+                    m_blackTekZonePaintName = result.value(QStringLiteral("name")).toString();
+                    m_blackTekZonePaintNew = false;
+                }
+            }
+        } else if (m_otbm) {
+            error = m_otbm->paintBlackTekZonePositions(m_blackTekZonePaintSource,
+                m_blackTekZonePaintName, positions, m_brushController.eraseStroke());
+        }
+    }
+    if (!error.isEmpty()) emit operationWarning(error);
+    emit contentUpdated();
+    update();
 }
 
 void MapView::eraseAt(int cx, int cy)
@@ -146,6 +205,11 @@ void MapView::paintFootprint(int x, int y)
     if (!m_brushController.eraseStroke() && m_brushController.serverId() > 0)
         emit brushUsed(m_brushController.serverId());
 
+    if (m_blackTekZonePaintActive) {
+        paintBlackTekZoneAt(x, y);
+        return;
+    }
+
     if (m_editController.activeZone() != 0) {
         paintZoneAt(x, y);
         return;
@@ -232,6 +296,10 @@ void MapView::selectCreatureBrush(const QString &name, bool isNpc)
 {
     if (!name.isEmpty() && m_groundClusterStampActive) cancelGroundClusterStamp();
     if (!name.isEmpty() && m_pathBuilder.active()) cancelPathBuilder();
+    if (!name.isEmpty() && m_blackTekZonePaintActive) {
+        stopBlackTekZonePainting();
+        setCursor(Qt::CrossCursor);
+    }
     if (m_brushController.creatureBrush() == name
         && (name.isEmpty() || m_brushController.creatureBrushIsNpc() == isNpc)) {
         return;
@@ -507,6 +575,79 @@ void MapView::placeCreatureBrushAt(int x, int y)
     m_brushController.placed().insert(pk);
 
     std::lock_guard<std::recursive_mutex> dlk(m_dataMutex);
+    if (m_otbm->blackTekSpawnMode()) {
+        const int floor = m_navigationController.floor();
+        const QVariantMap zone = m_otbm->blackTekSpawnZoneAt(x, y, floor, ct->isNpc);
+        if (zone.isEmpty()) {
+            emit operationWarning(ct->isNpc
+                ? QStringLiteral("Place NPCs inside an NPC spawn zone.")
+                : QStringLiteral("Place monsters inside a monster or boss spawn zone."));
+            return;
+        }
+
+        const QString sourceFile = zone.value(QStringLiteral("sourceFile")).toString();
+        const QString zoneName = zone.value(QStringLiteral("name")).toString();
+        const QVariantMap geometry = m_otbm->blackTekZoneGeometry(sourceFile, zoneName);
+
+        QString category = ct->isNpc ? QStringLiteral("npcs") : QStringLiteral("monsters");
+        const bool bossZone = zone.value(QStringLiteral("type")).toString() == QStringLiteral("boss");
+        if (bossZone) category = QStringLiteral("master");
+
+        const int originX = geometry.value(QStringLiteral("originX")).toInt();
+        const int originY = geometry.value(QStringLiteral("originY")).toInt();
+        const int originZ = geometry.value(QStringLiteral("originZ")).toInt();
+        const bool playerRelative = geometry.value(QStringLiteral("playerRelative")).toBool();
+        const int positionX = x - originX;
+        const int positionY = y - originY;
+        const int positionZ = floor - originZ;
+        if (positionX < 0 || positionY < 0 || positionZ < 0) {
+            emit operationWarning(QStringLiteral("Place the creature at or after the zone origin."));
+            return;
+        }
+        for (const QVariant &creatureValue : geometry.value(QStringLiteral("creatures")).toList()) {
+            const QVariantMap creature = creatureValue.toMap();
+            if (bossZone && creature.value(QStringLiteral("category")).toString() == QStringLiteral("master"))
+                category = QStringLiteral("minions");
+            const QVariantMap existingPosition = creature.value(QStringLiteral("position")).toMap();
+            const bool samePosition = existingPosition.isEmpty() || !creature.value(QStringLiteral("hasPosition")).toBool()
+                ? positionX == 0 && positionY == 0 && positionZ == 0
+                : existingPosition.value(QStringLiteral("x")).toInt() == (playerRelative ? positionX : x)
+                    && existingPosition.value(QStringLiteral("y")).toInt() == (playerRelative ? positionY : y)
+                    && existingPosition.value(QStringLiteral("z")).toInt() == (playerRelative ? positionZ : floor);
+            if (samePosition) {
+                if (creature.value(QStringLiteral("name")).toString() != ct->name)
+                    emit operationWarning(QStringLiteral("This tile already has a creature in %1.").arg(zoneName));
+                return;
+            }
+        }
+        const QString position = QStringLiteral("%1:%2:%3")
+            .arg(positionX).arg(positionY).arg(positionZ);
+        const auto quote = [](const QString &value) {
+            const QByteArray encoded = QJsonDocument(QJsonArray{value}).toJson(QJsonDocument::Compact);
+            return QString::fromUtf8(encoded.mid(1, encoded.size() - 2));
+        };
+        QString entry = QStringLiteral("{ name = %1, position = %2, interval = %3")
+            .arg(quote(ct->name), quote(position))
+            .arg(m_brushController.creatureSpawntime());
+        if (!ct->isNpc) {
+            entry += QStringLiteral(", chance = 100");
+            if (category == QStringLiteral("monsters") && geometry.value(QStringLiteral("staged")).toBool())
+                entry += QStringLiteral(", wave = 1");
+        }
+        entry += QStringLiteral(" }");
+
+        const QString text = m_otbm->blackTekZoneFileText(sourceFile);
+        const bool master = category == QStringLiteral("master");
+        const QString updated = m_otbm->replaceBlackTekZoneField(text, zoneName, category,
+                                                                  entry, !master);
+        if (updated.isEmpty()) {
+            emit operationWarning(QStringLiteral("Could not add the creature to zone %1.").arg(zoneName));
+            return;
+        }
+        const QString error = m_otbm->editBlackTekZoneFile(sourceFile, updated);
+        if (!error.isEmpty()) emit operationWarning(error);
+        return;
+    }
     if (!tileInAnySpawn(x, y)) {
         if (m_otbm->setSpawnAt(x, y, m_navigationController.floor(), 1)) {
             m_spawnIndex.append(x, y, 1);
@@ -612,6 +753,7 @@ void MapView::paintAt(int x, int y)
     if (!m_otbm || (m_brushController.serverId() <= 0 && m_editController.activeZone() == 0 && !m_editController.eraseMode()
                     && !m_brushController.optionalBorderBrush()
                     && !m_brushController.spawnBrush() && m_brushController.creatureBrush().isEmpty()
+                    && !m_blackTekZonePaintActive
                     && m_brushController.houseBrush() <= 0)) return;
     if (x == m_brushController.lastX() && y == m_brushController.lastY()) return;
 
@@ -651,4 +793,5 @@ void MapView::paintAt(int x, int y)
     m_brushController.setLastPosition(x, y);
     endEditBatch();
     refreshAfterEdit(static_cast<uint16_t>(m_brushController.serverId()));
+    if (m_blackTekZonePaintActive) emit blackTekZonePaintPreviewChanged();
 }

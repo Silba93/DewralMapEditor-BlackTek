@@ -398,7 +398,7 @@ void MapView::mousePressEvent(QMouseEvent *event)
     }
 
     if (event->button() == Qt::LeftButton && !m_editController.selectionMode()
-        && (m_brushController.serverId() > 0 || m_editController.activeZone() != 0 || m_editController.eraseMode()
+        && (m_blackTekZonePaintActive || m_brushController.serverId() > 0 || m_editController.activeZone() != 0 || m_editController.eraseMode()
             || m_brushController.optionalBorderBrush()
             || m_brushController.spawnBrush() || !m_brushController.creatureBrush().isEmpty() || m_brushController.houseBrush() > 0)) {
 
@@ -406,7 +406,7 @@ void MapView::mousePressEvent(QMouseEvent *event)
             m_editController.eraseMode() || (event->modifiers() & Qt::ControlModifier) != 0);
         const QPoint t = tileAtScreen(event->position());
 
-        m_dragDraw = (event->modifiers() & Qt::ShiftModifier) != 0 && brushCanDrag();
+        m_dragDraw = !m_blackTekZonePaintActive && (event->modifiers() & Qt::ShiftModifier) != 0 && brushCanDrag();
         if (m_dragDraw) {
             m_dragStartX = t.x();
             m_dragStartY = t.y();
@@ -416,7 +416,7 @@ void MapView::mousePressEvent(QMouseEvent *event)
             return;
         }
 
-        if (m_otbm) m_otbm->beginUndoGroup();
+        if (m_otbm && !m_blackTekZonePaintActive) m_otbm->beginUndoGroup();
         paintAt(t.x(), t.y());
     } else if (event->button() == Qt::LeftButton) {
 
@@ -686,7 +686,7 @@ void MapView::processPointerMove(const QPointF &pos, bool hoverOnly)
         m_hoverY = h.y();
         if (m_groundClusterStampActive) refreshGroundClusterStampPreview();
         updateHoverText();
-        const bool cursorVisual = m_brushController.serverId() > 0
+        const bool cursorVisual = m_blackTekZonePaintActive || m_brushController.serverId() > 0
             || m_editController.activeZone() != 0 || m_editController.eraseMode()
             || m_brushController.optionalBorderBrush()
             || m_brushController.spawnBrush() || !m_brushController.creatureBrush().isEmpty()
@@ -774,6 +774,10 @@ void MapView::mouseReleaseEvent(QMouseEvent *event)
             drawDragRect(m_dragStartX, m_dragStartY, t.x(), t.y());
             m_dragDraw = false;
             emit contentUpdated(); update();
+        } else if (m_blackTekZonePaintActive) {
+            commitBlackTekZoneStroke();
+            emit contentUpdated();
+            update();
         } else if (m_otbm) {
             m_otbm->endUndoGroup();
             emit contentUpdated();
@@ -800,7 +804,9 @@ void MapView::mouseUngrabEvent()
 {
     m_itemController.menuPending() = false;
     // Always close an active stroke so focus loss cannot leave an undo group open.
-    if (m_brushController.painting() && !m_dragDraw && m_otbm)
+    if (m_brushController.painting() && !m_dragDraw && m_blackTekZonePaintActive)
+        commitBlackTekZoneStroke();
+    else if (m_brushController.painting() && !m_dragDraw && m_otbm)
         m_otbm->endUndoGroup();
 
     m_brushController.setPainting(false);
@@ -883,6 +889,13 @@ void MapView::setTileSizeAt(int newSize, qreal px, qreal py)
 
 void MapView::keyPressEvent(QKeyEvent *event)
 {
+    if (m_blackTekZonePaintActive && event->key() == Qt::Key_Escape) {
+        if (m_brushController.painting()) commitBlackTekZoneStroke();
+        m_brushController.setPainting(false);
+        stopBlackTekZonePainting();
+        event->accept();
+        return;
+    }
     if (m_generationPaintMode && event->key()==Qt::Key_Escape) {m_generationPaintMode=0;m_generationDrawing=false;emit generationMaskChanged();emit generationBrushStopped();event->accept();return;}
 
     const auto matches = [this, event](const char *id, const char *defaultShortcut) {

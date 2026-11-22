@@ -28,6 +28,7 @@ DmeMenuBar {
     required property var creatureManagerDialog
     property var weatherDialog
     property var animationPreviewDialog
+    property var blackTekZonesDialog
     property var numberedZonesDialog
     required property var mapPropertiesDialog
     required property var statsDialog
@@ -534,6 +535,12 @@ DmeMenuBar {
             enabled: Backend.datReader.loaded && Backend.sprReader.loaded && !!menuBar.animationPreviewDialog
             onTriggered: menuBar.animationPreviewDialog.open()
         }
+        DmeMenuItem {
+            text: "BlackTek zones..."
+            visible: !!menuBar.blackTekZonesDialog && !!Backend.otbmReader.blackTekSpawnMode
+            enabled: !!menuBar.blackTekZonesDialog && !!Backend.otbmReader.blackTekSpawnMode && Backend.otbmReader.loaded
+            onTriggered: menuBar.blackTekZonesDialog.open()
+        }
         Action {
             text: "Numbered zones..."
             enabled: Backend.otbmReader.loaded && !!menuBar.numberedZonesDialog
@@ -806,6 +813,13 @@ DmeMenuBar {
             checkable: true
             checked: menuBar.mapView.showHouses
             onTriggered: menuBar.mapView.showHouses = !menuBar.mapView.showHouses
+        }
+        Action {
+            text: "Show BlackTek zones"
+            checkable: true
+            enabled: !!Backend.otbmReader.blackTekSpawnMode
+            checked: !!menuBar.mapView.showBlackTekZones
+            onTriggered: menuBar.mapView.showBlackTekZones = !menuBar.mapView.showBlackTekZones
         }
         Action {
             text: "Show numbered zones"

@@ -9,6 +9,31 @@ Item {
     id: root
     required property var mapView
     signal doorsRequested()
+    signal zonesRequested()
+    signal blackTekZonePresetRequested(string preset)
+    property string defaultBlackTekPresetDocument: ""
+    function ensureDefaultBlackTekZonePreset() {
+        const reader = Backend.otbmReader
+        if (!root.mapView || !reader.loaded || !reader.blackTekSpawnMode) return
+        const path = reader.filePath
+        if (root.defaultBlackTekPresetDocument === path) return
+        if (root.mapView.blackTekZonePaintActive) {
+            root.defaultBlackTekPresetDocument = path
+            return
+        }
+        root.blackTekZonePresetRequested("PZ")
+        if (root.mapView.blackTekZonePaintActive)
+            root.defaultBlackTekPresetDocument = path
+    }
+    Component.onCompleted: Qt.callLater(root.ensureDefaultBlackTekZonePreset)
+    Connections {
+        target: Backend.otbmReader
+        function onLoadedChanged() {
+            if (!Backend.otbmReader.loaded) root.defaultBlackTekPresetDocument = ""
+            else Qt.callLater(root.ensureDefaultBlackTekZonePreset)
+        }
+        function onBlackTekZonesChanged() { Qt.callLater(root.ensureDefaultBlackTekZonePreset) }
+    }
     function chooseZone(flag) {
         const next=mapView.activeZone===flag ? 0 : flag;
         mapView.activeZone=next;
@@ -75,7 +100,9 @@ Item {
         columns: root.compact ? 8 : root.framed ? Math.min(4,Math.max(1,Math.floor(toolsContent.width/48))) : Math.max(1, Math.floor((toolsContent.width + spacing) / (standaloneButtonWidth + spacing)))
         spacing: 3; width: toolsContent.width
         Repeater {
-            model: ["Lasso", "Border", "PZ", "NP", "NL", "PvP", "Auto", "Doors"]
+        model: root.mapView && Backend.otbmReader.blackTekSpawnMode
+            ? ["Lasso", "Border", "PZ", "NP", "NL", "PvP", "Zones", "Auto", "Doors"]
+            : ["Lasso", "Border", "PZ", "NP", "NL", "PvP", "Auto", "Doors"]
             delegate: Button {
                 id: toolButton
                 required property string modelData
@@ -83,7 +110,7 @@ Item {
                 width: toolsGrid.buttonWidth
                 height: root.compact ? 30 : root.tibiaUi ? 40 : root.framed ? 52 : 44
                 text: modelData
-                readonly property string description: ({Lasso:"Lasso selection",Border:"Optional borders",PZ:"Protection zone",NP:"No-PvP zone",NL:"No-logout zone",PvP:"PvP zone",Auto:"Automatic borders",Doors:"Doors"})[modelData]
+                readonly property string description: ({Lasso:"Lasso selection",Border:"Optional borders",PZ:Backend.otbmReader.blackTekSpawnMode ? "BlackTek protection-zone painter" : "Legacy protection flag",NP:Backend.otbmReader.blackTekSpawnMode ? "BlackTek no-PvP zone painter" : "Legacy no-PvP flag",NL:Backend.otbmReader.blackTekSpawnMode ? "BlackTek no-logout zone painter" : "Legacy no-logout flag",PvP:Backend.otbmReader.blackTekSpawnMode ? "BlackTek PvP zone painter" : "Legacy PvP flag",Zones:"BlackTek named zones and painter",Auto:"Automatic borders",Doors:"Doors"})[modelData]
                 Accessible.name: description
                 ToolTip.visible: hovered
                 ToolTip.delay: 500
@@ -115,9 +142,21 @@ Item {
                 checked: modelData === "Lasso" ? !!(root.mapView.selectionMode && root.mapView.lassoMode)
                     : modelData === "Border" ? !!root.mapView.optionalBorderMode
                     : modelData === "Auto" ? !!root.mapView.automagic
-                    : modelData !== "Doors" && root.mapView.activeZone === ({PZ:1, NP:4, NL:8, PvP:16})[modelData]
+                    : ["PZ", "NP", "NL", "PvP"].includes(modelData)
+                        ? (Backend.otbmReader.blackTekSpawnMode
+                            ? root.mapView.blackTekZonePaintActive && root.mapView.blackTekZonePaintPreset === modelData
+                            : root.mapView.activeZone === ({PZ:1, NP:4, NL:8, PvP:16})[modelData])
+                        : false
                 onClicked: {
                     if (modelData === "Doors") root.doorsRequested();
+                    else if (modelData === "Zones") root.zonesRequested();
+                    else if (["PZ", "NP", "NL", "PvP"].includes(modelData)
+                            && Backend.otbmReader.blackTekSpawnMode) {
+                        if (root.mapView.blackTekZonePaintActive
+                                && root.mapView.blackTekZonePaintPreset === modelData)
+                            root.mapView.stopBlackTekZonePainting();
+                        else root.blackTekZonePresetRequested(modelData);
+                    }
                     else if (modelData === "Lasso") {
                         const active = root.mapView.selectionMode && root.mapView.lassoMode;
                         root.mapView.eraseMode = false; root.mapView.optionalBorderMode = false;

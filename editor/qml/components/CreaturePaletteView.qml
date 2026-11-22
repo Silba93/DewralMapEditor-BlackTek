@@ -14,6 +14,8 @@ Column {
     required property string searchText
     required property string filterMode
     readonly property int count: creatureGrid.count
+    readonly property bool usesZoneSpawns: !!Backend.otbmReader.blackTekSpawnMode
+    signal defineZoneRequested()
 
     spacing: 4
 
@@ -42,10 +44,22 @@ Column {
     }
 
     DmeButton {
-        text: "Spawn brush"
+        id: spawnTool
+        text: root.usesZoneSpawns ? "Define spawn zone…" : "Spawn brush"
         width: parent.width - 14
-        checked: root.mapCtrl.spawnBrush
-        onClicked: root.mapCtrl.spawnBrush = !root.mapCtrl.spawnBrush
+        checked: !root.usesZoneSpawns && root.mapCtrl.spawnBrush
+        onClicked: {
+            if (root.usesZoneSpawns) root.defineZoneRequested()
+            else root.mapCtrl.spawnBrush = !root.mapCtrl.spawnBrush
+        }
+    }
+
+    Label {
+        id: placementHelp
+        visible: root.usesZoneSpawns
+        width: parent.width - 14
+        wrapMode: Text.WordWrap
+        text: "Pick a creature, then click inside its spawn zone."
     }
 
     Row {
@@ -55,7 +69,7 @@ Column {
 
         Text {
             id: spawntimeLabel
-            text: "Spawn time (s)"
+            text: root.usesZoneSpawns ? "Respawn (s)" : "Spawn time (s)"
             color: "#999"
             font.pixelSize: 11
             width: 80
@@ -72,6 +86,7 @@ Column {
 
     Row {
         id: spawnRadiusRow
+        visible: !root.usesZoneSpawns
         width: parent.width - 14
         spacing: 6
 
@@ -94,7 +109,8 @@ Column {
 
     Item {
         width: parent.width
-        height: parent.height - 26 - 22 - 22 - parent.spacing * 3
+        height: Math.max(0, root.height - spawnTool.height - spawntimeRow.height
+            - (placementHelp.visible ? placementHelp.height : spawnRadiusRow.height) - root.spacing * 3)
 
         GridView {
             id: creatureGrid
@@ -121,6 +137,7 @@ Column {
                 height: creatureGrid.cellHeight - 2
                 property bool isBrush: root.mapCtrl.creatureBrush === name
                                        && root.mapCtrl.creatureBrushIsNpc === isNpc
+                                       && !root.mapCtrl.blackTekZonePaintActive
                 color: isBrush
                        ? ("#414447")
                        : (((creatureMouseArea.containsMouse ? "#3A3A3A" : "#2A2A2A")))

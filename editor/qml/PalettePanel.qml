@@ -14,6 +14,7 @@ Rectangle {
     required property var app
 
     required property var mapCtrl
+    property var zoneEditorDialog
     readonly property bool tibiaUi: Backend.uiTheme.style === "tibia-ui"
     property bool floating: false
     property var brushDockSettings
@@ -700,6 +701,8 @@ Rectangle {
                 mapCtrl: paletteRoot.mapCtrl
                 searchText: paletteFilter.searchText
                 filterMode: paletteCol.creatureFilterType
+                onDefineZoneRequested: if (paletteRoot.zoneEditorDialog)
+                    paletteRoot.zoneEditorDialog.openForSpawnCreation(paletteCol.creatureFilterType)
             }
 
             HousePaletteView {
@@ -749,6 +752,10 @@ Rectangle {
             onDockDragFinished: (x,y) => paletteRoot.brushDockDragFinished(x,y)
             onDockDragCanceled: paletteRoot.brushDockDragCanceled()
             mapView: paletteRoot.mapCtrl
+            onZonesRequested: if (paletteRoot.zoneEditorDialog) paletteRoot.zoneEditorDialog.open()
+            onBlackTekZonePresetRequested: preset => {
+                if (paletteRoot.zoneEditorDialog) paletteRoot.zoneEditorDialog.startWorldPresetPainting(preset)
+            }
             onDoorsRequested: paletteRoot.selectKind("Door Palette")
         }
 

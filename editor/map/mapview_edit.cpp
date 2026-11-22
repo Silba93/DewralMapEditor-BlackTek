@@ -170,11 +170,19 @@ QVariantMap MapView::exportMinimap(const QString &path, const QString &mode,
 
 void MapView::undo()
 {
+    if (m_blackTekZonePaintActive && m_brushController.painting()) {
+        commitBlackTekZoneStroke();
+        m_brushController.finishStroke();
+        m_dragDraw = false;
+    }
     bool ok;
     {
         std::lock_guard<std::recursive_mutex> dlk(m_dataMutex);
         ok = m_otbm && m_otbm->undo();
         if (ok) {
+            if (m_blackTekZonePaintActive && !m_blackTekZonePaintOptions.isEmpty())
+                m_blackTekZonePaintNew = m_otbm->blackTekZoneGeometry(
+                    m_blackTekZonePaintSource, m_blackTekZonePaintName).isEmpty();
             ++m_metadataOverlayVersion;
             refreshUndoRedoTilesLocked();
         }
@@ -188,11 +196,19 @@ void MapView::undo()
 
 void MapView::redo()
 {
+    if (m_blackTekZonePaintActive && m_brushController.painting()) {
+        commitBlackTekZoneStroke();
+        m_brushController.finishStroke();
+        m_dragDraw = false;
+    }
     bool ok;
     {
         std::lock_guard<std::recursive_mutex> dlk(m_dataMutex);
         ok = m_otbm && m_otbm->redo();
         if (ok) {
+            if (m_blackTekZonePaintActive && !m_blackTekZonePaintOptions.isEmpty())
+                m_blackTekZonePaintNew = m_otbm->blackTekZoneGeometry(
+                    m_blackTekZonePaintSource, m_blackTekZonePaintName).isEmpty();
             ++m_metadataOverlayVersion;
             refreshUndoRedoTilesLocked();
         }

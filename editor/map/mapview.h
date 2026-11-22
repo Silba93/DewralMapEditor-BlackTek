@@ -105,6 +105,7 @@ class MapView : public QQuickItem
     Q_PROPERTY(bool showWallOutlines READ showWallOutlines WRITE setShowWallOutlines NOTIFY viewFlagsChanged)
     Q_PROPERTY(bool showPathing READ showPathing WRITE setShowPathing NOTIFY viewFlagsChanged)
     Q_PROPERTY(bool showCreatures READ showCreatures WRITE setShowCreatures NOTIFY viewFlagsChanged)
+    Q_PROPERTY(bool showBlackTekZones READ showBlackTekZones WRITE setShowBlackTekZones NOTIFY viewFlagsChanged)
     Q_PROPERTY(bool showSpawns READ showSpawns WRITE setShowSpawns NOTIFY viewFlagsChanged)
     Q_PROPERTY(bool showHouses READ showHouses WRITE setShowHouses NOTIFY viewFlagsChanged)
     Q_PROPERTY(bool showZones READ showZones WRITE setShowZones NOTIFY viewFlagsChanged)
@@ -131,6 +132,11 @@ class MapView : public QQuickItem
     Q_PROPERTY(int numberedZoneId READ numberedZoneId WRITE setNumberedZoneId NOTIFY brushParamsChanged)
     Q_PROPERTY(bool showNumberedZones READ showNumberedZones WRITE setShowNumberedZones NOTIFY viewFlagsChanged)
     Q_PROPERTY(int activeZone READ activeZone WRITE setActiveZone NOTIFY activeZoneChanged)
+    Q_PROPERTY(bool blackTekZonePaintActive READ blackTekZonePaintActive NOTIFY blackTekZonePaintChanged)
+    Q_PROPERTY(QString blackTekZonePaintName READ blackTekZonePaintName NOTIFY blackTekZonePaintChanged)
+    Q_PROPERTY(QString blackTekZonePaintPreset READ blackTekZonePaintPreset NOTIFY blackTekZonePaintChanged)
+    Q_PROPERTY(bool blackTekZonePaintCanAdvance READ blackTekZonePaintCanAdvance NOTIFY blackTekZonePaintChanged)
+    Q_PROPERTY(QVariantList blackTekZonePaintPreview READ blackTekZonePaintPreview NOTIFY blackTekZonePaintPreviewChanged)
 
     Q_PROPERTY(bool eraseMode READ eraseMode WRITE setEraseMode NOTIFY eraseModeChanged)
     Q_PROPERTY(bool pathBuilderActive READ pathBuilderActive NOTIFY pathBuilderChanged)
@@ -201,6 +207,15 @@ public:
                                     std::array<std::vector<float>, 8> *borders = nullptr) const;
     int activeZone() const { return static_cast<int>(m_editController.activeZone()); }
     void setActiveZone(int zone);
+    bool blackTekZonePaintActive() const { return m_blackTekZonePaintActive; }
+    QString blackTekZonePaintName() const { return m_blackTekZonePaintName; }
+    QString blackTekZonePaintPreset() const { return m_blackTekZonePaintOptions.value(QStringLiteral("preset")).toString(); }
+    bool blackTekZonePaintCanAdvance() const { return !m_blackTekZonePaintOptions.isEmpty(); }
+    QVariantList blackTekZonePaintPreview() const;
+    Q_INVOKABLE bool startBlackTekZonePainting(const QString &sourceFile, const QString &name);
+    Q_INVOKABLE bool startBlackTekZoneTypePainting(const QVariantMap &options);
+    Q_INVOKABLE void stopBlackTekZonePainting();
+    Q_INVOKABLE void advanceBlackTekZonePainting();
     bool eraseMode() const { return m_editController.eraseMode(); }
     bool pathBuilderActive() const { return m_pathBuilder.active(); }
     bool pathBuilderDrawing() const { return m_pathBuilder.drawing(); }
@@ -298,6 +313,12 @@ public:
         ++m_dataVersion;
         emit viewFlagsChanged();
         emit contentUpdated(); update();
+    }
+    bool showBlackTekZones() const { return m_showBlackTekZones; }
+    void setShowBlackTekZones(bool on) {
+        if (m_showBlackTekZones == on) return;
+        m_showBlackTekZones = on;
+        emit viewFlagsChanged();
     }
     bool showSpawns() const { return m_showSpawns; }
     void setShowSpawns(bool on) {
@@ -595,7 +616,7 @@ public:
     bool renderBrushRect(double &x0, double &y0, double &x1, double &y1) const {
         if (m_selectionController.moving() || m_selectionController.selecting() || m_editController.selectionMode()
             || m_hoverX < 0) return false;
-        if (m_brushController.serverId() <= 0 && m_editController.activeZone() == 0
+        if (!m_blackTekZonePaintActive && m_brushController.serverId() <= 0 && m_editController.activeZone() == 0
             && !m_editController.eraseMode() && !m_brushController.optionalBorderBrush()) return false;
         const int r = m_brushController.size();
         x0 = static_cast<double>((m_hoverX - r) * kSprite);
@@ -612,7 +633,7 @@ public:
     void setFloor(int floor);
     void setTileSize(int size);
 
-    Q_INVOKABLE bool loadMap(const QString &path);
+    Q_INVOKABLE bool loadMap(const QString &path, bool blackTek = false, bool recovery = false);
     Q_INVOKABLE void setClientAtlasIdentity(const QString &identity);
     Q_INVOKABLE void awaitInitialView();
     quint64 initialViewToken() const { return m_initialViewToken.load(); }
@@ -761,6 +782,9 @@ public:
     Q_INVOKABLE void randomizeSelection();
 
     Q_INVOKABLE QVariantMap aiSelectionContext() const;
+    Q_INVOKABLE QVariantMap createBlackTekZoneFromSelection(const QVariantMap &options);
+    Q_INVOKABLE QVariantMap createBlackTekZoneFromPositions(const QVariantMap &options,
+                                                            const QVariantList &positions);
     Q_INVOKABLE QVariantMap applyAiGroundPlan(const QVariantMap &plan,
                                              const QVariantMap &context);
     Q_INVOKABLE QVariantMap applyLuaPatch(const QVariantMap &patch, int x, int y, int z);
@@ -828,6 +852,8 @@ signals:
     void minimapOnChanged();
     void viewFlagsChanged();
     void activeZoneChanged();
+    void blackTekZonePaintChanged();
+    void blackTekZonePaintPreviewChanged();
     void eraseModeChanged();
     void clipboardChanged();
     void pastingChanged();
@@ -1016,6 +1042,8 @@ private:
     void recomputeTableAt(int x, int y, const QString &name);
 
     void paintZoneAt(int cx, int cy);
+    void paintBlackTekZoneAt(int cx, int cy);
+    void commitBlackTekZoneStroke();
 
     void eraseAt(int cx, int cy);
 
@@ -1156,6 +1184,12 @@ private:
     bool m_floorDirty = true;
 
     bool m_dragDraw = false;
+    bool m_blackTekZonePaintActive = false;
+    QString m_blackTekZonePaintSource;
+    QString m_blackTekZonePaintName;
+    QVariantMap m_blackTekZonePaintOptions;
+    bool m_blackTekZonePaintNew = false;
+    QSet<quint64> m_blackTekZoneStrokePositions;
     bool m_spacePanHeld = false;
     int m_dragStartX = 0, m_dragStartY = 0;
     bool brushCanDrag() const;
@@ -1180,6 +1214,7 @@ private:
     bool m_showPathing = false;
     bool m_showCreatures = true;
     bool m_showSpawns = true;
+    bool m_showBlackTekZones = true;
     bool m_showHouses = true;
     bool m_modernZones = false;
     double m_tilesOpacity = 1.0, m_itemsOpacity = 1.0;
@@ -1228,6 +1263,8 @@ private:
     void ensureCreatureSprites(const CreatureStore::CreatureType &creature);
     void placeSpawnAt(int x, int y);
     void placeCreatureBrushAt(int x, int y);
+    QVariantMap createBlackTekZone(const QVariantMap &options,
+                                   const QSet<quint64> *positions = nullptr);
     bool tileInAnySpawn(int x, int y) const;
 
     mutable MapSpawnIndexService m_spawnIndex;

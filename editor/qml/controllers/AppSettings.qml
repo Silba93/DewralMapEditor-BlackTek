@@ -52,6 +52,7 @@ Settings {
     property double itemsOpacity: 1.0
     property var zoneOpacities: [0.25, 0.25, 0.25, 0.25]
     property bool showZonesAlways: true
+    property bool showBlackTekZones: true
     property bool showAnimations: false
     property bool torchOn: false
     property bool showLightSources: false

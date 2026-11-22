@@ -11,7 +11,7 @@ Item {
     property bool initialized: false
     readonly property var preferenceNames: [
         "showWallOutlines", "showGrid", "showPathing", "showCreatures",
-        "showSpawns", "showHouses", "showZones", "showZonesAlways",
+        "showSpawns", "showHouses", "showZones", "showZonesAlways", "showBlackTekZones",
         "visibleZoneMask", "zoneOpacities", "zoneColors", "selectionColor", "selectionOpacity",
         "tilesOpacity", "itemsOpacity", "houseOpacity",
         "showAnimations", "torchOn", "lightAmbient", "lightAmbientColor", "minimapOn",

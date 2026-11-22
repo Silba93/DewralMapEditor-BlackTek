@@ -61,6 +61,7 @@
         <file>qml/themes/tibia/icons/tool-np.svg</file>
         <file>qml/themes/tibia/icons/tool-nl.svg</file>
         <file>qml/themes/tibia/icons/tool-pvp.svg</file>
+        <file>qml/themes/tibia/icons/tool-zones.svg</file>
         <file>qml/themes/tibia/icons/tool-auto.svg</file>
         <file>qml/themes/tibia/icons/tool-doors.svg</file>
         <file>qml/themes/tibia/icons/TOOLS-NOTICE.md</file>
@@ -253,6 +254,7 @@
         <file alias="qml/themes/fluent/icons/NP.svg">qml/themes/fluent/icons/NP.svg</file>
         <file alias="qml/themes/fluent/icons/NL.svg">qml/themes/fluent/icons/NL.svg</file>
         <file alias="qml/themes/fluent/icons/PvP.svg">qml/themes/fluent/icons/PvP.svg</file>
+        <file alias="qml/themes/fluent/icons/Zones.svg">qml/themes/fluent/icons/Zones.svg</file>
             <file alias="qml/themes/fluent/icons/cut.svg">qml/themes/fluent/icons/cut.svg</file>
             <file alias="qml/themes/fluent/icons/saveAs.svg">qml/themes/fluent/icons/saveAs.svg</file>
             <file alias="qml/themes/fluent/icons/redo.svg">qml/themes/fluent/icons/redo.svg</file>

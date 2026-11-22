@@ -63,6 +63,8 @@ add_library(OTFormats STATIC
     libs/otformats/otbreader.h
     libs/otformats/tmgformat.cpp
     libs/otformats/tmgformat.h
+    libs/otformats/blacktekzones.cpp
+    libs/otformats/blacktekzones.h
     libs/otformats/otbmreader.cpp
     libs/otformats/otbmreader.h
     libs/otformats/otbmitemtypes.h
@@ -691,6 +693,12 @@ if(BUILD_TESTING)
     set_tests_properties(tilemapgen_dialog PROPERTIES
         ENVIRONMENT "QT_QUICK_BACKEND=software;QML_IMPORT_PATH=$<TARGET_FILE_DIR:DewralMapEditor>/qml"
         TIMEOUT 30)
+    add_executable(blacktek_zones_test EXCLUDE_FROM_ALL tests/blacktek_zones_test.cpp)
+    target_link_libraries(blacktek_zones_test PRIVATE OTFormats Qt6::Core)
+    add_test(NAME blacktek_zones COMMAND blacktek_zones_test)
+    set_tests_properties(blacktek_zones PROPERTIES
+        ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+
     add_executable(otbm_background_load_test EXCLUDE_FROM_ALL
         tests/otbm_background_load_test.cpp)
     target_include_directories(otbm_background_load_test PRIVATE libs/otformats)

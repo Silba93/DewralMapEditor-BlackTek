@@ -158,6 +158,7 @@ Rectangle {
         }
         Repeater {
             model: [{name:"Zones overlay",key:"showZonesAlways"},
+                    {name:"BlackTek zones",key:"showBlackTekZones"},
                     {name:"Spawns",key:"showSpawns"}, {name:"Creatures",key:"showCreatures"}, {name:"Grid",key:"showGrid"}]
             delegate: CheckBox {
                 required property var modelData

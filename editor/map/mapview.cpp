@@ -18,6 +18,7 @@
 #include <QCryptographicHash>
 #include <QFileInfo>
 #include <QDir>
+#include <QRegularExpression>
 #include <QSettings>
 #include <QSet>
 #include <algorithm>
@@ -201,7 +202,7 @@ void MapView::setShowLowerFloors(bool on)
     emit contentUpdated(); update();
 }
 
-bool MapView::loadMap(const QString &path)
+bool MapView::loadMap(const QString &path, bool blackTek, bool recovery)
 {
     if (!m_otbm || path.trimmed().isEmpty() || m_otbm->isLoading()) return false;
     saveViewPosition();
@@ -232,9 +233,10 @@ bool MapView::loadMap(const QString &path)
     auto result = std::make_shared<LoadResult>();
 
     // Qt-managed workers also own Qt thread-local state during teardown.
-    (void)QtConcurrent::run([guard, targetGuard, guiThread, generation, path, result, cancel, itemTypes] {
+    (void)QtConcurrent::run([guard, targetGuard, guiThread, generation, path, result, cancel, itemTypes, blackTek, recovery] {
         result->reader = std::make_unique<OtbmReader>();
         result->reader->setItemTypes(itemTypes);
+        result->reader->setBlackTekSpawnMode(blackTek, recovery);
         const auto publishProgress = [guard, targetGuard, generation](int value, const QString &stage) {
             if (!guard || !targetGuard) return;
             QMetaObject::invokeMethod(guard, [guard, targetGuard, generation, value, stage] {
@@ -705,6 +707,7 @@ void MapView::setOptionalBorderMode(bool on)
 
 void MapView::setActiveZone(int zone)
 {
+    if (zone != 0 && m_blackTekZonePaintActive) stopBlackTekZonePainting();
     if (zone == 64 && (!m_otbm || !m_otbm->numberedZonesEnabled())) return;
     const quint32 z = static_cast<quint32>(zone < 0 ? 0 : zone);
     if (z != 0 && m_groundClusterStampActive) cancelGroundClusterStamp();
@@ -734,6 +737,122 @@ void MapView::setActiveZone(int zone)
     emit activeZoneChanged();
     ++m_metadataOverlayVersion;
     emit contentUpdated(); update();
+}
+
+bool MapView::startBlackTekZonePainting(const QString &sourceFile, const QString &name)
+{
+    if (!m_otbm || !m_otbm->blackTekSpawnMode() || m_brushController.painting()
+        || m_blackTekZonePaintActive) return false;
+    const QVariantMap geometry = m_otbm->blackTekZoneGeometry(sourceFile, name);
+    if (geometry.isEmpty()) return false;
+    m_blackTekZonePaintSource = sourceFile;
+    m_blackTekZonePaintName = name;
+    m_blackTekZonePaintOptions.clear();
+    m_blackTekZonePaintNew = false;
+    m_blackTekZonePaintActive = true;
+    m_blackTekZoneStrokePositions.clear();
+    forceActiveFocus(Qt::OtherFocusReason);
+    if (m_editController.activeZone() != 0) {
+        m_editController.activeZone() = 0;
+        emit activeZoneChanged();
+    }
+    if (m_editController.selectionMode()) {
+        m_editController.selectionMode() = false;
+        emit selectionModeChanged();
+    }
+    setCursor(Qt::CrossCursor);
+    emit blackTekZonePaintChanged();
+    emit contentUpdated();
+    update();
+    return true;
+}
+
+bool MapView::startBlackTekZoneTypePainting(const QVariantMap &options)
+{
+    if (!m_otbm || !m_otbm->isLoaded() || !m_otbm->blackTekSpawnMode()
+        || m_otbm->blackTekZoneFolder().isEmpty() || m_brushController.painting()
+        || m_blackTekZonePaintActive)
+        return false;
+    const QString name = options.value(QStringLiteral("name")).toString().trimmed();
+    const QString type = options.value(QStringLiteral("type")).toString().trimmed().toLower();
+    if (name.isEmpty() || (type != QStringLiteral("world") && type != QStringLiteral("monster")
+        && type != QStringLiteral("npc") && type != QStringLiteral("boss")
+        && type != QStringLiteral("item")))
+        return false;
+
+    m_blackTekZonePaintSource.clear();
+    m_blackTekZonePaintName = name;
+    m_blackTekZonePaintOptions = options;
+    m_blackTekZonePaintNew = true;
+    m_blackTekZoneStrokePositions.clear();
+    m_blackTekZonePaintActive = true;
+    forceActiveFocus(Qt::OtherFocusReason);
+    if (m_editController.activeZone() != 0) {
+        m_editController.activeZone() = 0;
+        emit activeZoneChanged();
+    }
+    if (m_editController.selectionMode()) {
+        m_editController.selectionMode() = false;
+        emit selectionModeChanged();
+    }
+    setCursor(Qt::CrossCursor);
+    emit blackTekZonePaintChanged();
+    emit contentUpdated();
+    update();
+    return true;
+}
+
+void MapView::advanceBlackTekZonePainting()
+{
+    if (!m_blackTekZonePaintActive || !blackTekZonePaintCanAdvance() || !m_otbm) return;
+    if (m_brushController.painting()) {
+        commitBlackTekZoneStroke();
+        m_brushController.setPainting(false);
+        m_dragDraw = false;
+    }
+
+    QSet<QString> names;
+    for (const auto &entry : m_otbm->blackTekZoneEntries())
+        names.insert(entry.toMap().value(QStringLiteral("name")).toString().toCaseFolded());
+
+    static const QRegularExpression numberedName(QStringLiteral("^(.+?) ([0-9]{1,18})$"));
+    const auto match = numberedName.match(m_blackTekZonePaintName);
+    const QString base = match.hasMatch() ? match.captured(1) : m_blackTekZonePaintName;
+    qulonglong number = match.hasMatch() ? match.captured(2).toULongLong() : 0;
+    QString name;
+    do {
+        name = base + QLatin1Char(' ') + QString::number(++number);
+    } while (names.contains(name.toCaseFolded()));
+
+    m_blackTekZonePaintSource.clear();
+    m_blackTekZonePaintName = name;
+    m_blackTekZonePaintOptions.insert(QStringLiteral("name"), name);
+    m_blackTekZonePaintNew = true;
+    forceActiveFocus(Qt::OtherFocusReason);
+    emit blackTekZonePaintChanged();
+    emit contentUpdated();
+    update();
+}
+
+void MapView::stopBlackTekZonePainting()
+{
+    if (!m_blackTekZonePaintActive) return;
+    if (m_brushController.painting()) {
+        commitBlackTekZoneStroke();
+        m_brushController.setPainting(false);
+        m_dragDraw = false;
+    }
+    m_blackTekZonePaintActive = false;
+    m_blackTekZonePaintSource.clear();
+    m_blackTekZonePaintName.clear();
+    m_blackTekZonePaintOptions.clear();
+    m_blackTekZonePaintNew = false;
+    m_blackTekZoneStrokePositions.clear();
+    emit blackTekZonePaintPreviewChanged();
+    setCursor(m_brushController.serverId() > 0 ? Qt::CrossCursor : Qt::ArrowCursor);
+    emit blackTekZonePaintChanged();
+    emit contentUpdated();
+    update();
 }
 
 void MapView::setSelectionMode(bool on)
@@ -877,6 +996,7 @@ bool MapView::useGroundBrushName(const QString &name)
 
 void MapView::onMapLoaded()
 {
+    if (m_blackTekZonePaintActive) stopBlackTekZonePainting();
     invalidateMapQuery();
     if (activeZone() == 64 && (!m_otbm || !m_otbm->numberedZonesEnabled())) setActiveZone(0);
     clearLuaPreview();

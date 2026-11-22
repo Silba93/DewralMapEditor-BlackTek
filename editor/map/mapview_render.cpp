@@ -992,7 +992,7 @@ void MapView::renderCollectBrushCursorInstances(std::vector<float> &out,
 
     if (m_selectionController.moving() || m_selectionController.selecting() || m_editController.selectionMode()
         || m_selectionController.pasting() || m_hoverX < 0) return;
-    if (m_brushController.serverId() <= 0 && m_editController.activeZone() == 0 && !m_editController.eraseMode()
+    if (!m_blackTekZonePaintActive && m_brushController.serverId() <= 0 && m_editController.activeZone() == 0 && !m_editController.eraseMode()
         && !m_brushController.optionalBorderBrush() && !m_brushController.spawnBrush()
         && m_brushController.creatureBrush().isEmpty() && m_brushController.houseBrush() <= 0) return;
 

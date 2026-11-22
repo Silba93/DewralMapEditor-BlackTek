@@ -443,6 +443,7 @@ DmeWindow {
         creatureManagerDialog: creatureManagerDialog
         weatherDialog: weatherDialog
         animationPreviewDialog: animationPreviewDialog
+        blackTekZonesDialog: blackTekZonesDialog
         numberedZonesDialog: numberedZonesDialog
         mapPropertiesDialog: mapPropsDialog
         statsDialog: statsDialog
@@ -538,6 +539,7 @@ DmeWindow {
         visible: true
         height: visible ? implicitHeight : 0
         settings: prefs
+        zoneEditorDialog: blackTekZonesDialog
         brushDragActive: root.brushDragging
         onToolsDockDragStarted: { root.dockDragKind = "tools"; root.brushDragging = true; }
         onToolsDoorsRequested: { prefs.paletteCollapsed = false; palette.selectKind("Door Palette"); }
@@ -651,6 +653,7 @@ DmeWindow {
         id: palette
         floating: paletteDock.side === "floating"
         brushDockSettings: prefs
+        zoneEditorDialog: blackTekZonesDialog
         onToolsDockDragStarted: { root.dockDragKind = "tools"; root.brushDragging = true; }
         onBrushDockDragStarted: { root.dockDragKind = "brush"; root.brushDragging = true; }
         onBrushDockDragMoved: (x,y) => { root.brushDragX = x; root.brushDragY = y; }
@@ -873,6 +876,7 @@ DmeWindow {
         app: app
         settings: prefs
         propertiesDialog: propsDialog
+        blackTekZonesDialog: blackTekZonesDialog
         browseFieldDialog: browseFieldDialog
         paletteNavigator: palette
     }
@@ -899,6 +903,44 @@ DmeWindow {
         fileName: app.savingFileName
     }
 
+    BlackTekZonesDialog {
+        id: blackTekZonesDialog
+        reader: Backend.otbmReader
+        mapView: workspace.mapView
+        onRevealZone: (path, name) => workspace.showBlackTekZone(path, name)
+    }
+    Connections {
+        target: Backend.otbmReader
+        function onLoadedChanged() {
+            const reader = Backend.otbmReader
+            if (reader.loaded && reader.blackTekSpawnMode
+                    && reader.blackTekZoneErrors.some(error => error.startsWith("Zone folder not found:")))
+                missingBlackTekZones.open()
+        }
+    }
+    DmeDialog {
+        id: missingBlackTekZones
+        title: "BlackTek zone folder not found"
+        width: 510
+        Column {
+            width: parent.width
+            spacing: 12
+            Text {
+                width: parent.width
+                color: "#dddddd"
+                wrapMode: Text.Wrap
+                text: Backend.otbmReader.blackTekZoneFolder
+            }
+            Row {
+                spacing: 8
+                DmeButton {
+                    text: "Locate zones folder?"
+                    onClicked: { missingBlackTekZones.close(); blackTekZonesDialog.open(); blackTekZonesDialog.locateFolder() }
+                }
+                DmeButton { text: "Open without zones"; onClicked: missingBlackTekZones.close() }
+            }
+        }
+    }
     FolderDialog {
         id: versionFolderDialogMain
         title: "Select client folder for " + app.profileLabel(app.pendingKey) + " (Tibia.dat / Tibia.spr / items.otb)"

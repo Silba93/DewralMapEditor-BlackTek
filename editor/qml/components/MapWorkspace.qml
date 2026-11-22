@@ -9,10 +9,16 @@ import "../dialogs"
 
 Item {
     id: workspace
+    function showBlackTekZone(path, name) {
+        mapOverlay.zoneFile = path
+        mapOverlay.zoneName = name
+        mapOverlay.updateBlackTekZone()
+    }
     readonly property bool tibiaUi: Backend.uiTheme.style === "tibia-ui"
     required property var app
     required property var settings
     required property var propertiesDialog
+    property var blackTekZonesDialog
     required property var browseFieldDialog
     required property var paletteNavigator
 
@@ -300,6 +306,7 @@ Item {
         }
 
         MapOverlay {
+            id: mapOverlay
             anchors.fill: parent
             z: 5
             mapCtrl: mapView
@@ -315,6 +322,18 @@ Item {
         DmeMenu {
             id: contextMenu
             objectName: "mapContextMenu"
+            DmeMenuItem {
+                text: "Create zone from selection…"
+                visible: !!workspace.blackTekZonesDialog && !!Backend.otbmReader.blackTekSpawnMode
+                enabled: mapView.selectionCount > 0
+                onTriggered: workspace.blackTekZonesDialog.openForCreation()
+            }
+            DmeMenuItem {
+                text: "Edit zone"
+                visible: !!workspace.blackTekZonesDialog && !!Backend.otbmReader.blackTekSpawnMode
+                    && !!Backend.otbmReader.blackTekZoneAt(mapArea.ctx.x, mapArea.ctx.y, mapArea.ctx.z).name
+                onTriggered: workspace.blackTekZonesDialog.openForZoneAt(mapArea.ctx.x, mapArea.ctx.y, mapArea.ctx.z)
+            }
             Action {
                 text: "Cut"
                 enabled: mapView.selectionCount > 0

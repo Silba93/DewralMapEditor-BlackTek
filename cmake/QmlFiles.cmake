@@ -91,6 +91,7 @@ set(DME_QML_FILES
     editor/qml/dialogs/MapAnalyzerDialog.qml
     editor/qml/dialogs/MapPropertiesDialog.qml
     editor/qml/dialogs/NewMapDialog.qml
+    editor/qml/dialogs/BlackTekZonesDialog.qml
     editor/qml/dialogs/NumberedZonesDialog.qml
     editor/qml/dialogs/NotesDialog.qml
     editor/qml/dialogs/PreferencesDialog.qml
