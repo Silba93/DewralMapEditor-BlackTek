@@ -44,7 +44,7 @@ Window {
         draft=copy;dirty=false;message="Profile saved";return true;
     }
     function choose(action) { if(dirty){pendingAction=action;unsaved.open();}else action(); }
-    function add() { choose(function(){changing=true;draft={id:Backend.clientLoader.newProfileId(),name:"New client",version:772,canary:false,folder:"",files:{},flags:{},resourceKey:""};dirty=true;validation=null;message="";changing=false;refresh();}); }
+    function add() { choose(function(){changing=true;draft={id:Backend.clientLoader.newProfileId(),name:"New client",version:772,canary:false,folder:"",files:{},flags:{},resourceKey:"",itemSource:"standard"};dirty=true;validation=null;message="";changing=false;refresh();}); }
     function duplicate() { const copy=profiles.copy(draft);choose(function(){copy.id=Backend.clientLoader.newProfileId();copy.name+=" copy";delete copy.validation;draft=copy;dirty=true;validation=null;refresh();}); }
     function openFor(key) {
         if(!visible){if(key)loadProfile(key);else if(keys.length)loadProfile(keys[0]);show();}
@@ -127,6 +127,19 @@ Window {
                         }
                     }
                     RowLayout {
+                        Layout.fillWidth:true
+                        visible:!root.resolved.appearance
+                        Label {text:"Item data:";Layout.preferredWidth:82}
+                        DmeComboBox {
+                            objectName:"clientProfileItemSource"
+                            Layout.preferredWidth:200;Layout.preferredHeight:28
+                            model:["Standard items.otb", "BlackTek items.toml"]
+                            currentIndex:root.draft.itemSource==="blacktek" ? 1 : 0
+                            onActivated:index=>root.edit("itemSource",index===1 ? "blacktek" : "standard")
+                        }
+                        Label {Layout.fillWidth:true;wrapMode:Text.WordWrap;text:"BlackTek uses item definitions from items.toml.";visible:root.draft.itemSource==="blacktek"}
+                    }
+                    RowLayout {
                         DmeButton {text:"Detect files";Layout.preferredHeight:28;onClicked:root.refresh()}
                         Label {text:"Automatic paths follow the folder and OTFI.";Layout.fillWidth:true}
                     }
@@ -139,7 +152,13 @@ Window {
                                 // Tibia 13+/15.x: catalog-content.json replaces DAT, SPR and OTB.
                                 model:root.resolved.appearance
                                     ? [{key:"catalog",label:"Catalog *"},{key:"xml",label:"items.xml"}]
-                                    : [{key:"dat",label:"DAT *"},{key:"spr",label:"SPR *"},{key:"otb",label:"OTB *"},{key:"xml",label:"items.xml"},{key:"otfi",label:"OTFI"}]
+                                    : [{key:"dat",label:"DAT *"},{key:"spr",label:"SPR *"}]
+                                        .concat(root.draft.itemSource==="blacktek"
+                                            ? [{key:"toml",label:"items.toml *"}]
+                                            : [{key:"otb",label:"OTB *"}])
+                                        .concat(root.draft.itemSource==="blacktek"
+                                            ? [{key:"otfi",label:"OTFI"}]
+                                            : [{key:"xml",label:"items.xml"},{key:"otfi",label:"OTFI"}])
                                 delegate:ColumnLayout {
                                     required property var modelData
                                     Layout.fillWidth:true;spacing:3
@@ -178,7 +197,7 @@ Window {
                                     Label {Layout.fillWidth:true;Layout.leftMargin:74;visible:!!root.resolved.errors[modelData.key];text:root.resolved.errors[modelData.key] || "";color:"#dfaf78"}
                                 }
                             }
-                            Label {text:"* Required. Blank = automatic; Off = optional file disabled.";color:"#aaa99f"}
+                            Label {text:"* Required. Blank = automatic; Off = optional file disabled. BlackTek items.toml can be in the profile folder or its items subfolder.";color:"#aaa99f"}
                             Label {
                                 Layout.fillWidth:true;wrapMode:Text.WordWrap;color:"#aaa99f"
                                 visible:!!root.resolved.appearance
@@ -204,7 +223,7 @@ Window {
                     }
                     RowLayout {
                         Layout.fillWidth:true
-                        Label {Layout.fillWidth:true;text:root.validationId ? "Checking files…" : root.validation && root.validation.success ? (root.resolved.appearance ? "✓  Tibia 15 assets validated" : "✓  DAT, SPR and OTB validated") : "Profile not validated";color:root.validation && root.validation.success ? "#83b77c" : "#c2b58b"}
+                        Label {Layout.fillWidth:true;text:root.validationId ? "Checking files…" : root.validation && root.validation.success ? (root.resolved.appearance ? "✓  Tibia 15 assets validated" : root.draft.itemSource==="blacktek" ? "✓  DAT, SPR and items.toml validated" : "✓  DAT, SPR and OTB validated") : "Profile not validated";color:root.validation && root.validation.success ? "#83b77c" : "#c2b58b"}
                         DmeButton {objectName:"validateClientProfile";text:"Validate files";Layout.preferredHeight:30;enabled:!root.validationId;onClicked:{root.message="";root.validationId=Backend.clientLoader.validateProfile(root.draft);}}
                     }
                     Label {Layout.fillWidth:true;wrapMode:Text.WordWrap;elide:Text.ElideNone;text:root.message || (root.validation ? root.validation.error || "Profile ready to use" : "Save incomplete profiles now and finish them later.");color:"#bdbdb2"}
@@ -228,7 +247,7 @@ Window {
         }
     }
     FolderDialog {id:folder;parentWindow:root;onAccepted:root.edit("folder",Backend.fileTools.toLocalFile(selectedFolder))}
-    FileDialog {id:file;parentWindow:root;title:"Choose "+root.fileTarget.toUpperCase();onAccepted:root.editFile(root.fileTarget,Backend.fileTools.toLocalFile(selectedFile))}
+    FileDialog {id:file;parentWindow:root;title:"Choose "+root.fileTarget.toUpperCase();nameFilters:root.fileTarget==="toml" ? ["TOML files (*.toml)","All files (*)"] : ["All files (*)"];onAccepted:root.editFile(root.fileTarget,Backend.fileTools.toLocalFile(selectedFile))}
     DmeDialog {
         id:unsaved;title:"Unsaved profile";width:430
         contentItem:Column {

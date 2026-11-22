@@ -5,7 +5,14 @@
 #include "itemsxmlreader.h"
 #include "nodefilereader.h"
 
+#include <QFile>
 #include <QSet>
+#include <QPair>
+
+#include <toml++/toml.hpp>
+
+#include <optional>
+#include <string_view>
 
 namespace {
 
@@ -152,6 +159,72 @@ QStringList collectOtbFlags(const OtbItem &item)
     return flags;
 }
 
+struct TomlOverlay {
+    QString name, description, type, floorChange;
+    uint16_t rotateTo = 0, maxTextLength = 0;
+    bool hasName = false, hasDescription = false, hasType = false;
+    bool hasFloorChange = false, hasRotateTo = false, hasMaxTextLength = false;
+    bool hasBlockProjectile = false, blockProjectile = false;
+    bool hasReadable = false, readable = false;
+    bool hasWriteable = false, writeable = false;
+    bool hasAllowDistRead = false, allowDistRead = false;
+    bool hasPickupable = false, pickupable = false;
+    bool hasMoveable = false, moveable = false;
+    bool hasStackable = false, stackable = false;
+};
+
+template <typename T>
+std::optional<T> tomlValue(const toml::table &table, std::string_view key)
+{
+    const toml::node *node = table.get(key);
+    return node ? node->value<T>() : std::nullopt;
+}
+
+void setOtbFlag(OtbItem &item, uint32_t flag, bool value)
+{
+    if (value) item.flags |= flag;
+    else item.flags &= ~flag;
+}
+
+void applyTomlType(OtbItem &item, const QString &rawType)
+{
+    const QString type = rawType.trimmed().toLower();
+    item.type = type;
+    if (type == QLatin1String("container"))
+        item.group = static_cast<uint8_t>(OtbItemGroup::Container);
+    else if (type == QLatin1String("door"))
+        item.group = static_cast<uint8_t>(OtbItemGroup::Door);
+    else if (type == QLatin1String("magicfield"))
+        item.group = static_cast<uint8_t>(OtbItemGroup::MagicField);
+    else if (type == QLatin1String("teleport"))
+        item.group = static_cast<uint8_t>(OtbItemGroup::Teleport);
+    else if (type == QLatin1String("key"))
+        item.group = static_cast<uint8_t>(OtbItemGroup::Key);
+    else if (type == QLatin1String("podium"))
+        item.group = static_cast<uint8_t>(OtbItemGroup::Podium);
+}
+
+QPair<uint32_t, uint32_t> itemVersionForClient(int clientVersion)
+{
+    static const QHash<int, QPair<uint32_t, uint32_t>> versions = {
+        {740, {1, 1}}, {750, {1, 1}}, {755, {1, 2}}, {760, {1, 3}},
+        {770, {1, 3}}, {780, {1, 4}}, {790, {1, 5}}, {792, {1, 6}},
+        {800, {2, 7}}, {810, {2, 8}}, {811, {2, 9}}, {820, {3, 10}},
+        {830, {3, 11}}, {840, {3, 12}}, {841, {3, 13}}, {842, {3, 14}},
+        {850, {3, 15}}, {854, {3, 17}}, {855, {3, 18}}, {860, {3, 20}},
+        {861, {3, 21}}, {862, {3, 22}}, {870, {3, 23}}, {871, {3, 24}},
+        {872, {3, 25}}, {873, {3, 26}}, {900, {3, 27}}, {910, {3, 28}},
+        {920, {3, 29}}, {940, {3, 30}}, {944, {3, 31}}, {946, {3, 35}},
+        {950, {3, 36}}, {952, {3, 37}}, {953, {3, 38}}, {954, {3, 39}},
+        {960, {3, 40}}, {961, {3, 41}}, {963, {3, 42}}, {970, {3, 43}},
+        {980, {3, 44}}, {981, {3, 45}}, {982, {3, 46}}, {983, {3, 47}},
+        {985, {3, 48}}, {986, {3, 49}}, {1010, {3, 50}}, {1020, {3, 51}},
+        {1021, {3, 52}}, {1030, {3, 53}}, {1031, {3, 54}}, {1041, {3, 55}},
+        {1077, {3, 56}}, {1098, {3, 57}}, {10100, {3, 58}}
+    };
+    return versions.value(clientVersion, {0, 0});
+}
+
 }
 
 OtbReader::OtbReader(QObject *parent)
@@ -223,6 +296,8 @@ void OtbReader::setItemsXml(ItemsXmlReader *itemsXml)
 
 void OtbReader::reset()
 {
+    const bool sourceChangedValue = m_itemSource != QLatin1String("standard");
+    m_itemSource = QStringLiteral("standard");
     beginResetModel();
     m_items.clear();
     m_serverIdToRow.clear();
@@ -238,6 +313,7 @@ void OtbReader::reset()
     emit itemCountChanged();
     emit loadedChanged();
     emit errorChanged();
+    if (sourceChangedValue) emit sourceChanged();
 }
 
 void OtbReader::setError(const QString &message)
@@ -376,6 +452,207 @@ bool OtbReader::loadFile(const QString &path)
 
     emit itemCountChanged();
     emit loadedChanged();
+    return true;
+}
+
+bool OtbReader::loadTomlFile(const QString &path, int clientVersion)
+{
+    reset();
+    if (!m_datReader || !m_datReader->isLoaded()) {
+        setError(QStringLiteral("BlackTek item loading requires a loaded DAT file"));
+        return false;
+    }
+    if (m_itemsXml) m_itemsXml->clear();
+
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        setError(QStringLiteral("Could not open items.toml: %1").arg(file.errorString()));
+        return false;
+    }
+    const QByteArray content = file.readAll();
+    if (file.error() != QFileDevice::NoError) {
+        setError(QStringLiteral("Could not read items.toml: %1").arg(file.errorString()));
+        return false;
+    }
+
+    toml::table document;
+    try {
+        document = toml::parse(std::string_view(content.constData(),
+                                                static_cast<size_t>(content.size())));
+    } catch (const toml::parse_error &error) {
+        setError(QStringLiteral("Could not parse items.toml: %1")
+                     .arg(QString::fromUtf8(error.description().data(),
+                                             static_cast<int>(error.description().size()))));
+        return false;
+    }
+    const toml::array *items = document["items"].as_array();
+    if (!items) {
+        setError(QStringLiteral("items.toml is missing the 'items' array"));
+        return false;
+    }
+
+    QHash<int, TomlOverlay> overlays;
+    for (const toml::node &node : *items) {
+        const toml::table *item = node.as_table();
+        if (!item) continue;
+        const auto id = tomlValue<int64_t>(*item, "id");
+        if (!id || *id <= 0 || *id > 65535) continue;
+        TomlOverlay overlay;
+        if (const auto value = tomlValue<std::string>(*item, "name")) {
+            overlay.name = QString::fromStdString(*value);
+            overlay.hasName = true;
+        }
+        if (const auto value = tomlValue<std::string>(*item, "description")) {
+            overlay.description = QString::fromStdString(*value);
+            overlay.hasDescription = true;
+        }
+        if (const auto value = tomlValue<std::string>(*item, "type")) {
+            overlay.type = QString::fromStdString(*value);
+            overlay.hasType = true;
+        }
+        if (const auto value = tomlValue<std::string>(*item, "floorchange")) {
+            overlay.floorChange = QString::fromStdString(*value);
+            overlay.hasFloorChange = true;
+        }
+        if (const auto value = tomlValue<int64_t>(*item, "rotateTo")) {
+            if (*value > 0 && *value <= 65535) {
+                overlay.rotateTo = static_cast<uint16_t>(*value);
+                overlay.hasRotateTo = true;
+            }
+        }
+        if (const auto value = tomlValue<int64_t>(*item, "maxTextLen")) {
+            if (*value >= 0 && *value <= 65535) {
+                overlay.maxTextLength = static_cast<uint16_t>(*value);
+                overlay.hasMaxTextLength = true;
+            }
+        }
+        const auto readBool = [item](std::string_view key, bool &present, bool &value) {
+            if (const auto parsed = tomlValue<bool>(*item, key)) {
+                present = true;
+                value = *parsed;
+            }
+        };
+        readBool("blockprojectile", overlay.hasBlockProjectile, overlay.blockProjectile);
+        readBool("readable", overlay.hasReadable, overlay.readable);
+        readBool("writeable", overlay.hasWriteable, overlay.writeable);
+        readBool("allowDistRead", overlay.hasAllowDistRead, overlay.allowDistRead);
+        readBool("pickupable", overlay.hasPickupable, overlay.pickupable);
+        readBool("moveable", overlay.hasMoveable, overlay.moveable);
+        readBool("stackable", overlay.hasStackable, overlay.stackable);
+        overlays.insert(static_cast<int>(*id), std::move(overlay));
+    }
+
+    std::vector<OtbItem> parsedItems;
+    parsedItems.reserve(m_datReader->items().size());
+    for (const ClientItem &client : m_datReader->items()) {
+        if (client.id == 0) continue;
+        OtbItem item;
+        item.server_id = item.client_id = client.id;
+        item.group = client.has(ClientProperty::Ground) ? static_cast<uint8_t>(OtbItemGroup::Ground)
+            : client.has(ClientProperty::Container) ? static_cast<uint8_t>(OtbItemGroup::Container)
+            : client.has(ClientProperty::FluidContainer) ? static_cast<uint8_t>(OtbItemGroup::Fluid)
+            : client.has(ClientProperty::Fluid) ? static_cast<uint8_t>(OtbItemGroup::Splash)
+            : static_cast<uint8_t>(OtbItemGroup::None);
+        item.speed = client.ground_speed;
+        item.max_text_length = client.max_text_length;
+        item.light_level = static_cast<uint8_t>(client.light_level);
+        item.light_color = static_cast<uint8_t>(client.light_color);
+        item.stack_order = client.has(ClientProperty::Ground) ? 1
+                         : client.has(ClientProperty::Bottom) ? 2
+                         : client.has(ClientProperty::Top) ? 3 : 0;
+        item.is_unpassable = client.has(ClientProperty::Solid);
+        item.blocks_missiles = client.has(ClientProperty::MissileBlock);
+        item.blocks_pathfinder = client.has(ClientProperty::PathBlock);
+        item.has_elevation = client.has(ClientProperty::Elevation);
+        item.is_useable = client.has(ClientProperty::Useable);
+        item.is_pickupable = client.has(ClientProperty::Pickup);
+        item.is_moveable = !client.has(ClientProperty::Fixed);
+        item.is_stackable = client.has(ClientProperty::Stackable);
+        item.always_on_top = client.has(ClientProperty::Bottom) || client.has(ClientProperty::Top);
+        item.is_readable = client.has(ClientProperty::Writable);
+        item.is_rotatable = client.has(ClientProperty::Rotatable);
+        item.is_hangable = client.has(ClientProperty::Hangable);
+        item.hook_east = client.has(ClientProperty::EastHook);
+        item.hook_south = client.has(ClientProperty::SouthHook);
+        setOtbFlag(item, 1u << 0, item.is_unpassable);
+        setOtbFlag(item, 1u << 1, item.blocks_missiles);
+        setOtbFlag(item, 1u << 2, item.blocks_pathfinder);
+        setOtbFlag(item, 1u << 3, item.has_elevation);
+        setOtbFlag(item, 1u << 4, item.is_useable);
+        setOtbFlag(item, 1u << 5, item.is_pickupable);
+        setOtbFlag(item, 1u << 6, !item.is_moveable);
+        setOtbFlag(item, 1u << 7, item.is_stackable);
+        setOtbFlag(item, 1u << 13, item.always_on_top);
+        setOtbFlag(item, 1u << 14, item.is_readable);
+        setOtbFlag(item, 1u << 15, item.is_rotatable);
+        setOtbFlag(item, 1u << 16, item.is_hangable);
+        setOtbFlag(item, 1u << 17, item.hook_east);
+        setOtbFlag(item, 1u << 18, item.hook_south);
+        if (client.has(ClientProperty::FloorChange)) setOtbFlag(item, 1u << 8, true);
+
+        const auto overlayIt = overlays.constFind(item.server_id);
+        if (overlayIt != overlays.cend()) {
+            const TomlOverlay &overlay = overlayIt.value();
+            if (overlay.hasName) item.name = overlay.name;
+            if (overlay.hasDescription) item.description = overlay.description;
+            if (overlay.hasType) applyTomlType(item, overlay.type);
+            if (overlay.hasRotateTo) {
+                item.rotate_to = overlay.rotateTo;
+                item.is_rotatable = true;
+                setOtbFlag(item, 1u << 15, true);
+            }
+            if (overlay.hasMaxTextLength) item.max_text_length = overlay.maxTextLength;
+            if (overlay.hasBlockProjectile) {
+                item.blocks_missiles = overlay.blockProjectile;
+                setOtbFlag(item, 1u << 1, item.blocks_missiles);
+            }
+            if (overlay.hasReadable) item.is_readable = overlay.readable;
+            if (overlay.hasWriteable) {
+                item.is_readable = overlay.writeable;
+                if (overlay.writeable)
+                    item.group = static_cast<uint8_t>(OtbItemGroup::Writeable);
+            }
+            setOtbFlag(item, 1u << 14, item.is_readable);
+            if (overlay.hasAllowDistRead) setOtbFlag(item, 1u << 20, overlay.allowDistRead);
+            if (overlay.hasPickupable) {
+                item.is_pickupable = overlay.pickupable;
+                setOtbFlag(item, 1u << 5, item.is_pickupable);
+            }
+            if (overlay.hasMoveable) {
+                item.is_moveable = overlay.moveable;
+                setOtbFlag(item, 1u << 6, !item.is_moveable);
+            }
+            if (overlay.hasStackable) {
+                item.is_stackable = overlay.stackable;
+                setOtbFlag(item, 1u << 7, item.is_stackable);
+            }
+            if (overlay.hasFloorChange) {
+                item.flags &= ~((1u << 8) | (1u << 9) | (1u << 10) | (1u << 11) | (1u << 12));
+                const QString direction = overlay.floorChange.toLower();
+                const uint32_t flag = direction == QLatin1String("north") ? (1u << 9)
+                    : direction == QLatin1String("east") ? (1u << 10)
+                    : direction == QLatin1String("south") ? (1u << 11)
+                    : direction == QLatin1String("west") ? (1u << 12) : (1u << 8);
+                item.flags |= flag;
+            }
+        }
+        parsedItems.push_back(std::move(item));
+    }
+
+    beginResetModel();
+    m_items = std::move(parsedItems);
+    m_serverIdToRow.clear(); m_clientIdToRow.clear();
+    for (int row = 0; row < static_cast<int>(m_items.size()); ++row) {
+        const OtbItem &item = m_items[static_cast<size_t>(row)];
+        m_serverIdToRow.insert(item.server_id, row);
+        m_clientIdToRow.insert(item.client_id, row);
+    }
+    const auto version = itemVersionForClient(clientVersion);
+    m_majorVersion = version.first; m_minorVersion = version.second; m_buildNumber = 0;
+    m_loaded = !m_items.empty(); m_itemSource = QStringLiteral("blacktek");
+    endResetModel();
+    emit itemCountChanged(); emit loadedChanged(); emit sourceChanged();
+    if (!m_loaded) { setError(QStringLiteral("items.toml produced no DAT item definitions")); return false; }
     return true;
 }
 
@@ -569,7 +846,10 @@ bool OtbReader::isTeleportItem(int serverId) const
 
 int OtbReader::rotateToForServerId(int serverId) const
 {
-    return m_itemsXml ? m_itemsXml->rotateToForServerId(serverId) : 0;
+    const int xmlRotation = m_itemsXml ? m_itemsXml->rotateToForServerId(serverId) : 0;
+    if (xmlRotation > 0) return xmlRotation;
+    const int row = rowForServerId(serverId);
+    return row >= 0 ? m_items[static_cast<size_t>(row)].rotate_to : 0;
 }
 
 QString OtbReader::nameForServerId(int serverId) const

@@ -16,10 +16,11 @@ QtObject {
         if(profileEntries[key]) {
             const entry=copy(profileEntries[key]);
             if(entry.canary===undefined)entry.canary=Number(entry.version)===1511;
+            if(entry.itemSource!=="blacktek")entry.itemSource="standard";
             return entry;
         }
         return {id:String(key),name:isCustomKey(key) ? String(key) : "Tibia "+versionLabel(profileVer(key)),
-            canary:profileVer(key)===1511,version:profileVer(key),folder:clientPaths[key] || "",files:{},flags:{},resourceKey:isCustomKey(key) ? String(key) : ""};
+            canary:profileVer(key)===1511,version:profileVer(key),folder:clientPaths[key] || "",files:{},flags:{},resourceKey:isCustomKey(key) ? String(key) : "",itemSource:"standard"};
     }
     function persistProfiles() {
         if(typeof settings.clientProfilesJson!=="undefined")settings.clientProfilesJson=JSON.stringify({version:1,profiles:profileEntries});
@@ -141,6 +142,12 @@ QtObject {
                 for(const key of keys)entries[key]=profile(key);
                 profileEntries=entries;persistProfiles();
             }
+            const normalized=copy(profileEntries);
+            for(const id of Object.keys(normalized)) {
+                if(normalized[id].itemSource!=="blacktek")normalized[id].itemSource="standard";
+            }
+            profileEntries=normalized;
+            persistProfiles();
         } catch(error) { profileEntries={}; }
     }
 

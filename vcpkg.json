@@ -21,6 +21,7 @@
     },
     "qtdeclarative",
     "qtshadertools",
-    "qtsvg"
+    "qtsvg",
+    "tomlplusplus"
   ]
 }
