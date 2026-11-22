@@ -161,6 +161,7 @@ QtObject {
         function reportLoadingProgress(value, stage) { loadingProgress = value; loadingStage = stage; }
         function finishLoading(success) { loading = false; }
         signal mapChanged()
+        signal notesChanged()
     }
     property QtObject docMgr: QtObject {
         property string currentProfileKey: "test"

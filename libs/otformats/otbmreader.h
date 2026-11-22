@@ -303,6 +303,13 @@ struct OtbmHouse {
     int size = -1; // "size" as read; -1 = count house tiles on save
 };
 
+struct OtbmNote {
+    int x = 0;
+    int y = 0;
+    int z = 0;
+    QString text;
+};
+
 // Canary sidecars: monsters and NPCs live in separate files, zones have their
 // own XML with names. Kept together so load/adopt/recovery copy them as one.
 struct OtbmSpawnAlternative {
@@ -348,10 +355,12 @@ class OtbmReader : public QObject
     Q_PROPERTY(QString description READ description NOTIFY mapChanged)
     Q_PROPERTY(QString spawnFile READ spawnFile NOTIFY mapChanged)
     Q_PROPERTY(QString houseFile READ houseFile NOTIFY mapChanged)
+    Q_PROPERTY(bool notesEnabled READ notesEnabled NOTIFY notesAvailabilityChanged)
     Q_PROPERTY(int tileCount READ tileCount NOTIFY loadedChanged)
     Q_PROPERTY(int itemCount READ itemCount NOTIFY loadedChanged)
     Q_PROPERTY(int townCount READ townCount NOTIFY loadedChanged)
     Q_PROPERTY(int waypointCount READ waypointCount NOTIFY loadedChanged)
+    Q_PROPERTY(int noteCount READ noteCount NOTIFY notesChanged)
     Q_PROPERTY(int undoCount READ undoCount NOTIFY mapChanged)
     Q_PROPERTY(int redoCount READ redoCount NOTIFY mapChanged)
     Q_PROPERTY(qint64 editOperationCount READ editOperationCount NOTIFY mapChanged)
@@ -395,6 +404,11 @@ public:
     int itemCount() const { return m_itemCount; }
     int townCount() const { return static_cast<int>(m_towns.size()); }
     int waypointCount() const { return static_cast<int>(m_waypoints.size()); }
+    int noteCount() const { return static_cast<int>(m_notes.size()); }
+    bool notesEnabled() const { return m_notesLoaded; }
+    Q_INVOKABLE QString notesFilePath() const;
+    Q_INVOKABLE QVariantMap prepareNotes();
+    Q_INVOKABLE bool createNotesFile();
 
     const std::deque<OtbmTile> &tiles() const { return m_tiles; }
 
@@ -413,9 +427,13 @@ public:
     const std::vector<OtbmTown> &towns() const { return m_towns; }
     const std::vector<OtbmWaypoint> &waypoints() const { return m_waypoints; }
     const std::vector<OtbmHouse> &houses() const { return m_houses; }
+    const std::vector<OtbmNote> &notes() const { return m_notes; }
 
     Q_INVOKABLE QVariantList townsList() const;
     Q_INVOKABLE QVariantList waypointsList() const;
+    Q_INVOKABLE QVariantList notesList() const;
+    Q_INVOKABLE QString noteText(int x, int y, int z) const;
+    Q_INVOKABLE bool setNote(int x, int y, int z, const QString &text);
     Q_INVOKABLE int addWaypoint();
     Q_INVOKABLE void removeWaypoint(int index);
     Q_INVOKABLE void renameWaypoint(int index, const QString &name);
@@ -576,6 +594,8 @@ signals:
     void zonesImported(const QString &source, const QVariantMap &mapping);
     void loadedChanged();
     void errorChanged();
+    void notesAvailabilityChanged();
+    void notesChanged();
     void activityOperation(const QString &kind, qint64 tiles);
     void activitySave(bool automatic, bool success);
     void mapChanged();
@@ -621,6 +641,9 @@ private:
 
     bool loadHousesXml(const QString &mapPath);
     bool buildHousesXml(const QString &mapPath, QString &targetPath, QByteArray &data);
+    bool loadNotes(const QString &mapPath);
+    bool buildNotesXml(const QString &mapPath, QString &targetPath,
+                       QByteArray &data);
 
     bool isCanaryFormat() const { return m_otbmVersion >= static_cast<uint32_t>(OtbmVersion::V5); }
     bool loadNpcXml(const QString &mapPath);
@@ -700,6 +723,7 @@ private:
     std::vector<OtbmTown> m_towns;
     std::vector<OtbmWaypoint> m_waypoints;
     std::vector<OtbmHouse> m_houses;
+    std::vector<OtbmNote> m_notes;
 
     uint32_t m_otbmVersion = 0;
     uint16_t m_width = 0;
@@ -718,6 +742,8 @@ private:
     bool m_housesXmlLoaded = false;
     bool m_spawnsModified = false;
     bool m_housesModified = false;
+    bool m_notesLoaded = false;
+    bool m_notesModified = false;
     int m_itemCount = 0;
 
     bool m_numberedZonesEnabled = false;

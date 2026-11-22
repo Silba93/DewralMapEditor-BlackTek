@@ -254,5 +254,29 @@ int main(int argc, char **argv)
         || !require(saved.readAll() == beforeFailedSave,
                     "Failed save overwrote the existing map"))
         return EXIT_FAILURE;
+    saved.close();
+
+    const QString notesPath = directory.filePath(QStringLiteral("compact-storage-notes.xml"));
+    const QVariantMap missingNotes = loaded.prepareNotes();
+    if (!require(missingNotes.value(QStringLiteral("path")).toString() == notesPath
+                     && !missingNotes.value(QStringLiteral("exists")).toBool()
+                     && !QFile::exists(notesPath),
+                 "A map without annotations did not report the missing sidecar"))
+        return EXIT_FAILURE;
+    const QString noteText = QStringLiteral("Check <spawn> & gate\nSecond line");
+    if (!require(loaded.createNotesFile() && QFile::exists(notesPath)
+                     && loaded.setNote(100, 100, 7, noteText) && loaded.saveFile(path),
+                 "Could not create and save the annotations sidecar"))
+        return EXIT_FAILURE;
+    OtbmReader annotated;
+    if (!require(annotated.loadFile(path) && annotated.notesEnabled()
+                     && annotated.noteText(100, 100, 7) == noteText,
+                 "Map annotations did not survive save/load"))
+        return EXIT_FAILURE;
+    if (!require(annotated.setNote(100, 100, 7, QString()) && annotated.saveFile(path)
+                     && QFile::exists(notesPath) && annotated.loadFile(path)
+                     && annotated.notesEnabled() && annotated.notesList().isEmpty(),
+                 "Deleting the last annotation did not preserve an empty sidecar"))
+        return EXIT_FAILURE;
     return EXIT_SUCCESS;
 }
