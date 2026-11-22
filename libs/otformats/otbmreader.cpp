@@ -8,8 +8,16 @@
 
 #include <QBuffer>
 #include <QDir>
+#include <QDirIterator>
+#include <toml++/toml.hpp>
 #include <QFile>
 #include <QSaveFile>
+#include <QSettings>
+#include <QScopeGuard>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
+#include <QCryptographicHash>
 #include <QFileInfo>
 #include <QHash>
 #include <QXmlStreamReader>
@@ -526,6 +534,11 @@ void OtbmReader::reset()
     m_otbItemsMinor = 0;
     m_description.clear();
     m_descriptionOriginal.clear();
+    m_blackTekZoneFolder.clear();
+    m_blackTekZoneData = {};
+    m_blackTekZoneFileDiagnostics.clear();
+    m_blackTekZoneEdits.clear();
+    m_blackTekZoneOriginals.clear();
     m_spawnFileOriginal.clear();
     m_houseFileOriginal.clear();
     m_spawnFile.clear();
@@ -711,8 +724,54 @@ bool OtbmReader::loadFile(const QString &path)
     // Spawn and house XML files are optional sidecars and never block map loading.
     reportLoadingProgress(68, QStringLiteral("Loading spawn data..."));
     if (loadCancelled()) return abortLoad(QStringLiteral("Loading cancelled"));
-    loadSpawnsXml(path);
-    if (isCanaryFormat()) {
+    if (m_blackTekSpawnMode) {
+        const QFileInfo mapInfo(path);
+        QString worldName = mapInfo.completeBaseName();
+        const QDir world = mapInfo.dir();
+        const QString config = world.absoluteFilePath(QStringLiteral("../../config/server.toml"));
+        if (world.dirName() == QStringLiteral("world") && QFileInfo::exists(config)) {
+            QFile configFile(config);
+            if (configFile.open(QIODevice::ReadOnly)) {
+                try {
+                    const auto content = configFile.readAll();
+                    const auto server = toml::parse(std::string_view(content.constData(), static_cast<size_t>(content.size())));
+                    const QString configured = QString::fromStdString(server["world"]["map_name"].value_or(std::string("forgotten")));
+                    if (QFileInfo(world.filePath(configured + QStringLiteral(".otbm"))).absoluteFilePath()
+                        == mapInfo.absoluteFilePath())
+                        worldName = configured;
+                } catch (const toml::parse_error &) {
+                    // Standalone discovery still works with an unreadable server configuration.
+                }
+            }
+        }
+        const auto key = QCryptographicHash::hash(mapInfo.absoluteFilePath().toUtf8(), QCryptographicHash::Sha256).toHex();
+        const QString linked = QSettings().value(QStringLiteral("blackTekZoneFolders/") + QString::fromLatin1(key)).toString();
+        linkBlackTekZones(QFileInfo(linked).isDir() ? linked : world.filePath(worldName + QStringLiteral("-zones")));
+        QFile recovery(path + QStringLiteral(".blacktek-zones.json"));
+        if (m_readBlackTekRecovery && recovery.open(QIODevice::ReadOnly)) {
+            const auto data = QJsonDocument::fromJson(recovery.readAll()).object();
+            const QString folder = data.value("folder").toString();
+            if (!folder.isEmpty() && QDir::isAbsolutePath(folder)) {
+                linkBlackTekZones(folder);
+                const auto files = data.value("files").toObject();
+                for (auto it = files.begin(); it != files.end(); ++it) {
+                    const QString relative = QDir::cleanPath(it.key());
+                    if (QDir::isAbsolutePath(relative) || relative.startsWith("../")
+                        || !relative.endsWith(".toml")) continue;
+                    const QString target = QDir(folder).absoluteFilePath(relative);
+                    const auto file = it.value().toObject();
+                    if (file.contains("original"))
+                        m_blackTekZoneOriginals[target] = QByteArray::fromBase64(file.value("original").toString().toLatin1());
+                    else
+                        m_blackTekZoneOriginals.remove(target);
+                    restoreBlackTekZoneText(target, file.value("edited").toString().toUtf8());
+                }
+            }
+        }
+    } else {
+        loadSpawnsXml(path);
+    }
+    if (!m_blackTekSpawnMode && isCanaryFormat()) {
         reportLoadingProgress(69, QStringLiteral("Loading NPC and zone data..."));
         loadNpcXml(path);
         loadZonesXml(path);
@@ -805,6 +864,13 @@ bool OtbmReader::adoptLoadedState(OtbmReader &source)
     swap(m_descriptionOriginal, source.m_descriptionOriginal);
     swap(m_spawnFileOriginal, source.m_spawnFileOriginal);
     swap(m_houseFileOriginal, source.m_houseFileOriginal);
+    swap(m_blackTekSpawnMode, source.m_blackTekSpawnMode);
+    swap(m_blackTekZoneFolder, source.m_blackTekZoneFolder);
+    swap(m_blackTekZoneData, source.m_blackTekZoneData);
+    swap(m_blackTekZoneFileDiagnostics, source.m_blackTekZoneFileDiagnostics);
+    swap(m_blackTekZoneEdits, source.m_blackTekZoneEdits);
+    swap(m_blackTekZoneOriginals, source.m_blackTekZoneOriginals);
+    emit blackTekZonesChanged();
     swap(m_spawnFile, source.m_spawnFile);
     swap(m_houseFile, source.m_houseFile);
     swap(m_canary, source.m_canary);
@@ -908,11 +974,13 @@ bool OtbmReader::setMapProperties(const QString &description,
 }
 
 bool OtbmReader::newMap(int width, int height, int clientVersion,
-                        int otbMajor, int otbMinor, int canaryMode)
+                        int otbMajor, int otbMinor, int canaryMode, bool blackTek)
 {
     if (width <= 0 || height <= 0) return false;
 
     reset();
+    m_blackTekSpawnMode = blackTek;
+    emit blackTekZonesChanged();
     m_width = static_cast<uint16_t>(std::clamp(width, 256, 65535));
     m_height = static_cast<uint16_t>(std::clamp(height, 256, 65535));
     // Choose the default only for a newly created map. Loaded documents keep
@@ -2612,6 +2680,7 @@ bool OtbmReader::setNpcSpawnAt(int x,int y,int z,int radius)
 
 bool OtbmReader::setSpawnAt(int x, int y, int z, int radius)
 {
+    if (m_blackTekSpawnMode) return false;
     if (radius <= 0) return clearSpawnAt(x, y, z);
     if (radius > 65535) return false;
     OtbmTile *t = tileForSpawnEdit(x, y, z);
@@ -2625,6 +2694,7 @@ bool OtbmReader::setSpawnAt(int x, int y, int z, int radius)
 
 bool OtbmReader::setCreatureAt(int x, int y, int z, const QString &name, int spawntime, bool isNpc, int direction)
 {
+    if (m_blackTekSpawnMode) return false;
     if (name.isEmpty()) return clearCreatureAt(x, y, z);
     OtbmTile *t = tileForSpawnEdit(x, y, z);
     if (!t) return false;
@@ -3392,7 +3462,7 @@ void OtbmReader::pushUndo(UndoAction &&action)
 {
     m_redoStack.clear();
     m_redoBytes = 0;
-    if (action.tiles.empty() && action.houses.empty()) return;
+    if (action.tiles.empty() && action.houses.empty() && action.zonePath.isEmpty()) return;
     ++m_editOperationCount;
     m_changedTileCount += static_cast<qint64>(action.tiles.size());
     emit activityOperation(QStringLiteral("edit"), static_cast<qint64>(action.tiles.size()));
@@ -3433,7 +3503,7 @@ qsizetype OtbmReader::estimateItemDynamicBytes(const OtbmMapItem &item)
 
 qsizetype OtbmReader::estimateActionBytes(const UndoAction &action)
 {
-    qsizetype bytes = static_cast<qsizetype>(sizeof(UndoAction));
+    qsizetype bytes = static_cast<qsizetype>(sizeof(UndoAction)) + action.zoneText.size() + action.zonePath.size() * sizeof(QChar);
     bytes += static_cast<qsizetype>(action.houses.capacity())
              * static_cast<qsizetype>(sizeof(UndoAction::HouseSnapshot));
     bytes += static_cast<qsizetype>(action.tiles.capacity())
@@ -3673,6 +3743,11 @@ bool OtbmReader::undo()
     for (const auto &snap : action.houses)
         if (const OtbmHouse *house = houseById(static_cast<int>(snap.id)))
             redoAction.houses.push_back({snap.id, house->entryX, house->entryY, house->entryZ});
+    if (!action.zonePath.isEmpty()) {
+        redoAction.zonePath = action.zonePath;
+        redoAction.zoneText = m_blackTekZoneEdits.value(action.zonePath, m_blackTekZoneOriginals.value(action.zonePath));
+        restoreBlackTekZoneText(action.zonePath, action.zoneText);
+    }
     redoAction.bytes = estimateActionBytes(redoAction);
     m_redoBytes += redoAction.bytes;
     m_redoStack.push_back(std::move(redoAction));
@@ -3706,6 +3781,11 @@ bool OtbmReader::redo()
     for (const auto &snap : action.houses)
         if (const OtbmHouse *house = houseById(static_cast<int>(snap.id)))
             undoAction.houses.push_back({snap.id, house->entryX, house->entryY, house->entryZ});
+    if (!action.zonePath.isEmpty()) {
+        undoAction.zonePath = action.zonePath;
+        undoAction.zoneText = m_blackTekZoneEdits.value(action.zonePath, m_blackTekZoneOriginals.value(action.zonePath));
+        restoreBlackTekZoneText(action.zonePath, action.zoneText);
+    }
     undoAction.bytes = estimateActionBytes(undoAction);
     m_undoBytes += undoAction.bytes;
     m_undoStack.push_back(std::move(undoAction));
@@ -3751,6 +3831,7 @@ QVariantMap OtbmReader::importFile(const QString &path, int offsetX, int offsetY
 
     OtbmReader source;
     source.setItemTypes(m_itemTypes);
+    source.setBlackTekSpawnMode(m_blackTekSpawnMode);
     if (!source.loadFile(path)) {
         result.insert(QStringLiteral("error"), source.errorString());
         return result;
@@ -4199,6 +4280,9 @@ struct OtbmReader::RecoverySnapshot {
     decltype(OtbmReader::m_canary) canary;
     decltype(OtbmReader::m_spawnsXmlLoaded) spawnsXmlLoaded;
     decltype(OtbmReader::m_housesXmlLoaded) housesXmlLoaded;
+    bool blackTekSpawnMode;
+    QString blackTekZoneFolder;
+    QMap<QString, QByteArray> blackTekZoneOriginals, blackTekZoneEdits;
     decltype(OtbmReader::m_spawnsModified) spawnsModified;
     decltype(OtbmReader::m_housesModified) housesModified;
     decltype(OtbmReader::m_itemCount) itemCount;
@@ -4210,7 +4294,7 @@ std::shared_ptr<OtbmReader::RecoverySnapshot> OtbmReader::createRecoverySnapshot
 {
     auto snapshot = std::make_shared<RecoverySnapshot>();
     if (!m_loaded) { snapshot->error = QStringLiteral("No loaded map to save"); return snapshot; }
-    if (!m_spawnsXmlLoaded || !m_housesXmlLoaded) {
+    if ((!m_blackTekSpawnMode && !m_spawnsXmlLoaded) || !m_housesXmlLoaded) {
         snapshot->error = QStringLiteral("Cannot create recovery data while a map XML file is unread. Correct the XML file and reload the map first.");
         return snapshot;
     }
@@ -4241,6 +4325,10 @@ std::shared_ptr<OtbmReader::RecoverySnapshot> OtbmReader::createRecoverySnapshot
     snapshot->canary = m_canary;
     snapshot->spawnsXmlLoaded = m_spawnsXmlLoaded;
     snapshot->housesXmlLoaded = m_housesXmlLoaded;
+    snapshot->blackTekSpawnMode = m_blackTekSpawnMode;
+    snapshot->blackTekZoneFolder = m_blackTekZoneFolder;
+    snapshot->blackTekZoneOriginals = m_blackTekZoneOriginals;
+    snapshot->blackTekZoneEdits = m_blackTekZoneEdits;
     snapshot->spawnsModified = m_spawnsModified;
     snapshot->housesModified = m_housesModified;
     snapshot->itemCount = m_itemCount;
@@ -4276,6 +4364,10 @@ QString OtbmReader::writeRecoverySnapshot(std::shared_ptr<RecoverySnapshot> snap
     writer.m_canary = std::move(snapshot->canary);
     writer.m_spawnsXmlLoaded = std::move(snapshot->spawnsXmlLoaded);
     writer.m_housesXmlLoaded = std::move(snapshot->housesXmlLoaded);
+    writer.m_blackTekSpawnMode = snapshot->blackTekSpawnMode;
+    writer.m_blackTekZoneFolder = std::move(snapshot->blackTekZoneFolder);
+    writer.m_blackTekZoneOriginals = std::move(snapshot->blackTekZoneOriginals);
+    writer.m_blackTekZoneEdits = std::move(snapshot->blackTekZoneEdits);
     writer.m_spawnsModified = std::move(snapshot->spawnsModified);
     writer.m_housesModified = std::move(snapshot->housesModified);
     writer.m_itemCount = std::move(snapshot->itemCount);
@@ -4287,7 +4379,7 @@ QString OtbmReader::writeRecoverySnapshot(std::shared_ptr<RecoverySnapshot> snap
 
 bool OtbmReader::saveRecoveryFile(const QString &path)
 {
-    if (!m_spawnsXmlLoaded || !m_housesXmlLoaded) {
+    if ((!m_blackTekSpawnMode && !m_spawnsXmlLoaded) || !m_housesXmlLoaded) {
         setError(QStringLiteral("Cannot create recovery data while a map XML file is unread. Correct the XML file and reload the map first."));
         return false;
     }
@@ -4413,11 +4505,11 @@ bool OtbmReader::saveFileInternal(const QString &path, bool recoveryMode)
     QByteArray npcData;
     QByteArray zoneData;
     QByteArray notesData;
-    if (!buildSpawnsXml(path, spawnTarget, spawnData)
+    if ((!m_blackTekSpawnMode && !buildSpawnsXml(path, spawnTarget, spawnData))
         || !buildHousesXml(path, houseTarget, houseData)
         || !buildNotesXml(path, notesTarget, notesData)
-        || (canary && !buildNpcXml(path, npcTarget, npcData))
-        || (canary && !buildZonesXml(path, zoneTarget, zoneData))) {
+        || (canary && !m_blackTekSpawnMode && !buildNpcXml(path, npcTarget, npcData))
+        || (canary && !m_blackTekSpawnMode && !buildZonesXml(path, zoneTarget, zoneData))) {
         const QString error = m_errorString;
         restoreDocumentMetadata();
         setError(error);
@@ -4713,7 +4805,7 @@ bool OtbmReader::saveFileInternal(const QString &path, bool recoveryMode)
         restoreDocumentMetadata();
         setError(restored
             ? originalError
-            : originalError + QStringLiteral("; warning: not all XML files could be restored"));
+            : originalError + QStringLiteral("; warning: not all sidecar files could be restored"));
         return false;
     };
     struct Pending { QSaveFile *output; const QString *target; const ExternalBackup *backup; const char *label; };
@@ -4724,6 +4816,120 @@ bool OtbmReader::saveFileInternal(const QString &path, bool recoveryMode)
         {&zoneOutput, &zoneTarget, &zoneBackup, "zone"},
         {&notesOutput, &notesTarget, &notesBackup, "notes"},
     };
+    struct ZoneWrite {
+        ExternalBackup backup;
+        std::unique_ptr<QSaveFile> output;
+    };
+    QStringList createdZoneDirs;
+    bool zoneSaveCommitted = false;
+    const auto removeEmptyZoneDirs = qScopeGuard([&] {
+        if (!zoneSaveCommitted)
+            for (auto it = createdZoneDirs.crbegin(); it != createdZoneDirs.crend(); ++it)
+                QDir().rmdir(*it);
+    });
+    std::vector<ZoneWrite> zoneWrites;
+    if (m_blackTekSpawnMode && recoveryMode) {
+        QJsonObject files;
+        for (auto it = m_blackTekZoneEdits.cbegin(); it != m_blackTekZoneEdits.cend(); ++it) {
+            QJsonObject file{{"edited", QString::fromUtf8(it.value())}};
+            if (m_blackTekZoneOriginals.contains(it.key()))
+                file["original"] = QString::fromLatin1(m_blackTekZoneOriginals.value(it.key()).toBase64());
+            files[QDir(m_blackTekZoneFolder).relativeFilePath(it.key())] = file;
+        }
+        const auto bytes = QJsonDocument(QJsonObject{{"folder", m_blackTekZoneFolder}, {"files", files}}).toJson(QJsonDocument::Compact);
+        const QString target = path + QStringLiteral(".blacktek-zones.json");
+        zoneWrites.emplace_back();
+        auto &write = zoneWrites.back();
+        if (!captureBackup(target, write.backup, QStringLiteral("BlackTek recovery zones")))
+            return rollback(m_errorString);
+        write.output = std::make_unique<QSaveFile>(target);
+        if (!stage(*write.output, target, bytes, QStringLiteral("BlackTek recovery zones")))
+            return rollback(m_errorString);
+    }
+    QString destinationFolder = m_blackTekZoneFolder;
+    if (m_blackTekSpawnMode && !recoveryMode) {
+        const bool copying = m_filePath.isEmpty()
+            || QFileInfo(path).absoluteFilePath() != QFileInfo(m_filePath).absoluteFilePath();
+        if (copying) {
+            const QFileInfo target(path);
+            destinationFolder = target.dir().filePath(target.completeBaseName() + QStringLiteral("-zones"));
+            if (QFileInfo::exists(destinationFolder))
+                return rollback(QStringLiteral("Zone destination already exists: %1").arg(destinationFolder));
+            if (QFileInfo(m_blackTekZoneFolder).isDir()) {
+                if (!QDir().mkdir(destinationFolder))
+                    return rollback(QStringLiteral("Cannot create zone destination: %1").arg(destinationFolder));
+                createdZoneDirs.append(destinationFolder);
+            }
+        }
+        auto originals = m_blackTekZoneOriginals;
+        if (copying && QFileInfo(m_blackTekZoneFolder).isDir()) {
+            QDirIterator files(m_blackTekZoneFolder, QDir::Files | QDir::NoSymLinks, QDirIterator::Subdirectories);
+            while (files.hasNext()) {
+                const QString source = files.next();
+                if (originals.contains(source)) continue;
+                if (QFileInfo(source).suffix() == QStringLiteral("toml"))
+                    return rollback(QStringLiteral("Zone folder changed externally: %1").arg(source));
+                QFile file(source);
+                if (!file.open(QIODevice::ReadOnly))
+                    return rollback(QStringLiteral("Cannot read zone folder file: %1").arg(source));
+                const auto bytes = file.readAll();
+                if (file.error() != QFileDevice::NoError)
+                    return rollback(QStringLiteral("Cannot read zone folder file: %1").arg(source));
+                originals.insert(source, bytes);
+            }
+        }
+        auto payloads = copying ? originals : QMap<QString, QByteArray>{};
+        for (auto it = m_blackTekZoneEdits.cbegin(); it != m_blackTekZoneEdits.cend(); ++it)
+            payloads.insert(it.key(), it.value());
+        if (!m_blackTekZoneEdits.isEmpty()) {
+            QHash<QString, QString> zoneSources;
+            for (const auto &zone : m_blackTekZoneData.zones) {
+                if (zone.name.isEmpty()) continue;
+                if (zoneSources.contains(zone.name)
+                    && (m_blackTekZoneEdits.contains(zone.sourceFile)
+                        || m_blackTekZoneEdits.contains(zoneSources.value(zone.name))))
+                    return rollback(QStringLiteral("Duplicate BlackTek zone %1 in %2 and %3")
+                                    .arg(zone.name, zoneSources.value(zone.name), zone.sourceFile));
+                zoneSources.insert(zone.name, zone.sourceFile);
+            }
+        }
+        zoneWrites.reserve(static_cast<size_t>(payloads.size()));
+        for (auto it = payloads.cbegin(); it != payloads.cend(); ++it) {
+            QFile original(it.key());
+            if (originals.contains(it.key())
+                ? (!original.open(QIODevice::ReadOnly) || original.readAll() != originals.value(it.key())
+                   || original.error() != QFileDevice::NoError)
+                : QFileInfo::exists(it.key()))
+                return rollback(QStringLiteral("Zone file changed externally: %1").arg(it.key()));
+            const QString target = copying
+                ? QDir(destinationFolder).filePath(QDir(m_blackTekZoneFolder).relativeFilePath(it.key()))
+                : it.key();
+            const QString relative = QDir(destinationFolder).relativeFilePath(target);
+            if (QDir::isAbsolutePath(relative) || relative.startsWith(QStringLiteral("../")))
+                return rollback(QStringLiteral("Zone file is outside the linked folder: %1").arg(target));
+            QStringList missingDirectories;
+            for (QFileInfo directory(QFileInfo(target).absolutePath()); !directory.exists();) {
+                const auto current = directory.absoluteFilePath();
+                const auto parent = directory.absolutePath();
+                if (parent == current || parent.isEmpty())
+                    return rollback(QStringLiteral("Cannot locate zone destination: %1").arg(target));
+                missingDirectories.prepend(current);
+                directory = QFileInfo(parent);
+            }
+            for (const auto &directory : missingDirectories) {
+                if (!QDir().mkdir(directory))
+                    return rollback(QStringLiteral("Cannot create zone folder: %1").arg(directory));
+                createdZoneDirs.append(directory);
+            }
+            zoneWrites.emplace_back();
+            auto &write = zoneWrites.back();
+            if (!captureBackup(target, write.backup, QStringLiteral("BlackTek zones")))
+                return rollback(m_errorString);
+            write.output = std::make_unique<QSaveFile>(target);
+            if (!stage(*write.output, target, it.value(), QStringLiteral("BlackTek zones")))
+                return rollback(m_errorString);
+        }
+    }
     for (const Pending &entry : pending) {
         if (entry.target->isEmpty()) continue;
         if (!entry.output->commit())
@@ -4731,8 +4937,14 @@ bool OtbmReader::saveFileInternal(const QString &path, bool recoveryMode)
                                 .arg(QLatin1String(entry.label), *entry.target));
         committed.push_back(entry.backup);
     }
+    for (auto &write : zoneWrites) {
+        if (!write.output->commit())
+            return rollback(QStringLiteral("Failed to commit BlackTek zone file: %1").arg(write.output->fileName()));
+        committed.push_back(&write.backup);
+    }
     if (!mapOutput.commit())
         return rollback(QStringLiteral("Failed to commit map file: %1").arg(path));
+    zoneSaveCommitted = true;
 
     if (!recoveryMode && (!spawnTarget.isEmpty() || m_spawnFile.isEmpty())) {
         m_spawnsXmlLoaded = true;
@@ -4756,6 +4968,19 @@ bool OtbmReader::saveFileInternal(const QString &path, bool recoveryMode)
     }
     if (!recoveryMode) {
         m_notesModified = false;
+        if (m_blackTekSpawnMode && (!zoneWrites.empty() || destinationFolder != m_blackTekZoneFolder)) {
+            if (destinationFolder != m_blackTekZoneFolder) {
+                const QDir source(m_blackTekZoneFolder), destination(destinationFolder);
+                for (auto *stack : {&m_undoStack, &m_redoStack})
+                    for (auto &action : *stack)
+                        if (!action.zonePath.isEmpty())
+                            action.zonePath = destination.filePath(source.relativeFilePath(action.zonePath));
+            }
+            m_blackTekZoneEdits.clear();
+            m_rebindingBlackTekZones = true;
+            linkBlackTekZones(destinationFolder);
+            m_rebindingBlackTekZones = false;
+        }
         setDirty(false);
     }
     return true;
@@ -5057,4 +5282,312 @@ QVariantList OtbmReader::zoneAreas(int id) const
     }
     std::sort(result.begin(),result.end(),[](const QVariant &a,const QVariant &b){const auto x=a.toMap(),y=b.toMap();if(x.value("tiles")!=y.value("tiles"))return x.value("tiles").toLongLong()>y.value("tiles").toLongLong();if(x.value("floor")!=y.value("floor"))return x.value("floor").toInt()<y.value("floor").toInt();if(x.value("y")!=y.value("y"))return x.value("y").toInt()<y.value("y").toInt();return x.value("x").toInt()<y.value("x").toInt();});
     m_zoneAreas.insert(id,result);return result;
+}
+QVariantList OtbmReader::blackTekZoneEntries() const
+{
+    QVariantList entries;
+    for (const auto &zone : m_blackTekZoneData.zones) {
+        entries.append(QVariantMap{{"name", zone.name}, {"sourceFile", zone.sourceFile},
+                                  {"x", zone.minX}, {"y", zone.minY}, {"z", zone.floor}});
+    }
+    return entries;
+}
+
+bool OtbmReader::linkBlackTekZones(const QString &folder)
+{
+    if (!m_blackTekSpawnMode || folder.isEmpty() || !m_blackTekZoneEdits.isEmpty()) return false;
+    const QString absolute = QDir(folder).absolutePath();
+    if (!m_blackTekZoneFolder.isEmpty() && m_blackTekZoneFolder != absolute && !m_rebindingBlackTekZones) {
+        for (auto *history : {&m_undoStack, &m_redoStack}) {
+            auto &bytes = history == &m_undoStack ? m_undoBytes : m_redoBytes;
+            for (auto it = history->begin(); it != history->end();) {
+                if (it->zonePath.isEmpty()) {
+                    ++it;
+                } else {
+                    bytes -= it->bytes;
+                    it = history->erase(it);
+                }
+            }
+        }
+    }
+    m_blackTekZoneFolder = absolute;
+    m_blackTekZoneData = {};
+    m_blackTekZoneFileDiagnostics.clear();
+    m_blackTekZoneOriginals.clear();
+    QDirIterator files(absolute, {QStringLiteral("*.toml")}, QDir::Files | QDir::NoSymLinks, QDirIterator::Subdirectories);
+    while (files.hasNext()) {
+        const QString filePath = files.next();
+        if (QFileInfo(filePath).suffix() != QStringLiteral("toml")) continue;
+        QFile file(filePath);
+        if (!file.open(QIODevice::ReadOnly)) {
+            m_blackTekZoneFileDiagnostics[file.fileName()].append(file.fileName() + QStringLiteral(": ") + file.errorString());
+            continue;
+        }
+        const auto bytes = file.readAll();
+        m_blackTekZoneOriginals.insert(file.fileName(), bytes);
+        const auto parsed = BlackTekZones::parse(file.fileName(), bytes);
+        if (const auto diagnostics = parsed.diagnostics(); !diagnostics.isEmpty())
+            m_blackTekZoneFileDiagnostics.insert(file.fileName(), diagnostics);
+        m_blackTekZoneData.zones += parsed.zones;
+    }
+    refreshBlackTekZoneDiagnostics();
+    const bool found = QFileInfo(absolute).isDir();
+    if (found && !m_filePath.isEmpty() && !m_detachedLoading) {
+        const auto key = QCryptographicHash::hash(QFileInfo(m_filePath).absoluteFilePath().toUtf8(), QCryptographicHash::Sha256).toHex();
+        QSettings().setValue(QStringLiteral("blackTekZoneFolders/") + QString::fromLatin1(key), absolute);
+    }
+    emit blackTekZonesChanged();
+    return found;
+}
+
+void OtbmReader::refreshBlackTekZoneDiagnostics()
+{
+    m_blackTekZoneData.errors.clear();
+    for (const auto &errors : m_blackTekZoneFileDiagnostics)
+        m_blackTekZoneData.errors += errors;
+    QHash<QString, QString> zoneSources;
+    for (const auto &zone : m_blackTekZoneData.zones) {
+        if (zone.name.isEmpty()) continue;
+        if (zoneSources.contains(zone.name))
+            m_blackTekZoneData.errors.append(QStringLiteral("Duplicate zone %1 in %2 and %3")
+                .arg(zone.name, zoneSources.value(zone.name), zone.sourceFile));
+        else
+            zoneSources.insert(zone.name, zone.sourceFile);
+    }
+    if (!QFileInfo(m_blackTekZoneFolder).isDir())
+        m_blackTekZoneData.errors.append(QStringLiteral("Zone folder not found: %1").arg(m_blackTekZoneFolder));
+}
+
+QString OtbmReader::blackTekZoneFileText(const QString &path) const
+{
+    QString text = QString::fromUtf8(m_blackTekZoneEdits.value(path, m_blackTekZoneOriginals.value(path)));
+    text.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
+    return text;
+}
+
+QString OtbmReader::editBlackTekZoneFile(const QString &path, const QString &text)
+{
+    if (!m_blackTekSpawnMode || (!m_blackTekZoneOriginals.contains(path)
+        && path != QDir(m_blackTekZoneFolder).filePath(QStringLiteral("zones.toml"))))
+        return QStringLiteral("Select a loaded zone file.");
+    const auto previous = m_blackTekZoneEdits.value(path, m_blackTekZoneOriginals.value(path));
+    if (text == blackTekZoneFileText(path)) return {};
+    QByteArray bytes = text.toUtf8();
+    const auto lineBreaks = previous.count('\n');
+    if (lineBreaks > 0 && lineBreaks == previous.count("\r\n")) {
+        bytes.replace("\r\n", "\n");
+        bytes.replace("\n", "\r\n");
+    }
+    const QByteArray utf8Bom = QByteArray::fromHex("efbbbf");
+    if (previous.startsWith(utf8Bom) && !bytes.startsWith(utf8Bom)) bytes.prepend(utf8Bom);
+    const auto parsed = BlackTekZones::parse(path, bytes);
+    if (!parsed.errors.isEmpty()) return parsed.errors.join(QLatin1Char('\n'));
+    for (const auto &zone : parsed.zones)
+        for (const auto &other : m_blackTekZoneData.zones)
+            if (!zone.name.isEmpty() && other.sourceFile != path && other.name == zone.name)
+                return QStringLiteral("Zone %1 also exists in %2").arg(zone.name, other.sourceFile);
+    if (previous == bytes) return {};
+    UndoAction action;
+    action.zonePath = path;
+    action.zoneText = previous;
+    pushUndo(std::move(action));
+    restoreBlackTekZoneText(path, bytes);
+    setDirty(true);
+    return {};
+}
+
+void OtbmReader::restoreBlackTekZoneText(const QString &path, const QByteArray &bytes)
+{
+    if (bytes == m_blackTekZoneOriginals.value(path))
+        m_blackTekZoneEdits.remove(path);
+    else
+        m_blackTekZoneEdits.insert(path, bytes);
+    auto &zones = m_blackTekZoneData.zones;
+    zones.erase(std::remove_if(zones.begin(), zones.end(), [&](const auto &zone) {
+        return zone.sourceFile == path;
+    }), zones.end());
+    auto parsed = BlackTekZones::parse(path, bytes);
+    zones += parsed.zones;
+    if (const auto diagnostics = parsed.diagnostics(); diagnostics.isEmpty())
+        m_blackTekZoneFileDiagnostics.remove(path);
+    else
+        m_blackTekZoneFileDiagnostics.insert(path, diagnostics);
+    refreshBlackTekZoneDiagnostics();
+    emit blackTekZonesChanged();
+}
+
+QVariantMap OtbmReader::blackTekZoneGeometry(const QString &sourceFile, const QString &name) const
+{
+    for (const auto &zone : m_blackTekZoneData.zones) {
+        if (zone.sourceFile != sourceFile || zone.name != name) continue;
+        QVariantList tiles, spawns, creatures;
+        for (const auto &point : zone.worldPositions)
+            tiles.append(QVariantMap{{"x", point.x}, {"y", point.y}, {"z", point.z}});
+        for (const auto &creature : zone.creatures) {
+            const QVariantMap point{{"x", creature.position.x}, {"y", creature.position.y}, {"z", creature.position.z}};
+            if (creature.hasPosition && !zone.playerRelative)
+                spawns.append(point);
+            creatures.append(QVariantMap{{"category", creature.category}, {"index", creature.index},
+                                         {"name", creature.name}, {"position", point},
+                                         {"hasPosition", creature.hasPosition}, {"interval", creature.intervalSeconds},
+                                         {"chance", creature.chance}, {"delay", creature.delayMilliseconds},
+                                         {"wave", creature.wave}});
+        }
+        return {{ "originX", zone.hasRange ? zone.rangeStart.x : zone.minX },
+                { "originY", zone.hasRange ? zone.rangeStart.y : zone.minY },
+                { "originZ", zone.hasRange ? zone.rangeStart.z : zone.floor },
+                { "x", zone.minX }, { "y", zone.minY }, { "z", zone.floor },
+                { "topFloor", zone.hasRange ? std::max(zone.rangeStart.z, zone.rangeEnd.z) : zone.floor },
+                { "hasRange", zone.hasRange && zone.worldPositions.isEmpty() }, { "right", zone.maxX }, { "bottom", zone.maxY },
+                { "tiles", tiles }, { "spawns", spawns }, { "creatures", creatures },
+                { "playerRelative", zone.playerRelative }, { "staged", zone.staged }};
+    }
+    return {};
+}
+
+QString OtbmReader::replaceBlackTekZoneField(const QString &text, const QString &zoneName,
+                                             const QString &field, const QString &value, bool insertArrayEntry) const
+{
+    const QByteArray bytes = text.toUtf8();
+    try {
+        const auto document = toml::parse(std::string_view(bytes.constData(), static_cast<size_t>(bytes.size())));
+        const auto parts = field.split(QLatin1Char('.'));
+        const auto locate = [&](const toml::table &root, qsizetype count) -> const toml::node * {
+            const toml::node *node = root.get(zoneName.toStdString());
+            for (qsizetype i = 0; node && i < count; ++i) {
+                const auto &part = parts[i];
+                if (const auto *parent = node->as_table()) {
+                    node = parent->get(part.toStdString());
+                } else if (const auto *array = node->as_array()) {
+                    bool valid = false;
+                    const auto index = part.toUInt(&valid);
+                    node = valid ? array->get(index) : nullptr;
+                } else {
+                    node = nullptr;
+                }
+            }
+            return node;
+        };
+        const auto *node = locate(document, parts.size());
+        const auto lines = text.split(QLatin1Char('\n'));
+        const auto offset = [&](const auto &position) -> qsizetype {
+            if (position.line < 1 || position.line > lines.size()) return -1;
+            qsizetype result = 0;
+            for (qsizetype i = 0; i + 1 < position.line; ++i) result += lines[i].size() + 1;
+            const auto &line = lines[position.line - 1];
+            qsizetype index = 0;
+            for (unsigned column = 1; column < position.column; ++column) {
+                if (index >= line.size()) return -1;
+                index += line[index].isHighSurrogate() && index + 1 < line.size() && line[index + 1].isLowSurrogate() ? 2 : 1;
+            }
+            return result + index;
+        };
+        if (!node) {
+            const auto key = parts.last();
+            if (key.isEmpty() || std::any_of(key.begin(), key.end(), [](QChar c) {
+                    return !c.isLetterOrNumber() && c != QLatin1Char('_');
+                })) return {};
+            const auto *container = locate(document, parts.size() - 1);
+            const auto *parent = container ? container->as_table() : nullptr;
+            if (!parent) return {};
+            const auto header = parent->source().begin;
+            if (header.line < 1 || header.line > lines.size()) return {};
+            QString replacement = text;
+            const QString newValue = insertArrayEntry ? QStringLiteral("[") + value + QStringLiteral("]") : value;
+            const QString assignment = key + QStringLiteral(" = ") + newValue;
+            if (parent->is_inline()) {
+                const auto start = offset(header);
+                if (start < 0 || start >= text.size() || text[start] != QLatin1Char('{')) return {};
+                replacement.insert(start + 1, QStringLiteral(" ") + assignment
+                    + (parent->empty() ? QStringLiteral(" ") : QStringLiteral(", ")));
+            } else {
+                if (!lines[header.line - 1].trimmed().startsWith(QLatin1Char('['))) return {};
+                qsizetype insertion = 0;
+                for (qsizetype i = 0; i < header.line; ++i) insertion += lines[i].size() + 1;
+                replacement.insert(std::min(insertion, text.size()),
+                    (insertion > text.size() ? QStringLiteral("\n") : QString()) + assignment + QStringLiteral("\n"));
+            }
+            const auto utf8 = replacement.toUtf8();
+            const auto checked = toml::parse(std::string_view(utf8.constData(), static_cast<size_t>(utf8.size())));
+            return locate(checked, parts.size()) ? replacement : QString();
+        }
+        const auto region = node->source();
+        const auto start = offset(region.begin), end = offset(region.end);
+        if (start < 0 || end < start) return {};
+        QString replacement = text;
+        if (insertArrayEntry) {
+            const auto *array = node->as_array();
+            if (!array || start >= text.size() || text[start] != QLatin1Char('[')) return {};
+            replacement.insert(start + 1, QStringLiteral("\n    ") + value
+                               + (array->empty() ? QStringLiteral("\n") : QStringLiteral(", ")));
+        } else {
+            replacement.replace(start, end - start, value);
+        }
+        return replacement;
+    } catch (const toml::parse_error &) {
+        return {};
+    }
+}
+
+QString OtbmReader::changeBlackTekZoneName(const QString &text, const QString &oldName,
+                                           const QString &newName) const
+{
+    const auto parse = [](const QString &source) {
+        const auto bytes = source.toUtf8();
+        return toml::parse(std::string_view(bytes.constData(), static_cast<size_t>(bytes.size())));
+    };
+    try {
+        const auto original = parse(text);
+        const auto key = oldName.toStdString();
+        const auto *zone = original.get_as<toml::table>(key);
+        if (!zone || (!newName.isEmpty() && original.contains(newName.toStdString()))) return {};
+        auto lines = text.split(QLatin1Char('\n'));
+        QStringList retained;
+        const auto encoded = QJsonDocument(QJsonArray{newName}).toJson(QJsonDocument::Compact);
+        const QString quoted = QString::fromUtf8(encoded.mid(1, encoded.size() - 2));
+        bool inside = false;
+        for (auto line : lines) {
+            const auto trimmed = line.trimmed();
+            if (trimmed.startsWith(QLatin1Char('['))) {
+                try {
+                    const auto header = parse(trimmed);
+                    if (header.size() == 1 && header.begin()->second.is_table()) {
+                        const bool matches = header.contains(key);
+                        inside = matches;
+                        if (matches && !newName.isEmpty()) {
+                            qsizetype start = line.indexOf(QLatin1Char('[')) + 1;
+                            if (line[start] == QLatin1Char('[')) ++start;
+                            while (start < line.size() && line[start].isSpace()) ++start;
+                            const QChar quote = line[start];
+                            qsizetype end = start;
+                            if (quote == QLatin1Char('"') || quote == QLatin1Char(39)) {
+                                ++end;
+                                while (end < line.size() && line[end] != quote) {
+                                    if (quote == QLatin1Char('"') && line[end] == QLatin1Char(92)) ++end;
+                                    ++end;
+                                }
+                                ++end;
+                            } else {
+                                while (end < line.size() && !line[end].isSpace()
+                                       && line[end] != QLatin1Char('.') && line[end] != QLatin1Char(']')) ++end;
+                            }
+                            line.replace(start, end - start, quoted);
+                        }
+                    }
+                } catch (const toml::parse_error &) {
+                    // A value spanning multiple lines can also begin with a bracket.
+                }
+            }
+            if (!inside || !newName.isEmpty() || trimmed.startsWith(QLatin1Char('#')) || trimmed.isEmpty())
+                retained.append(line);
+        }
+        const QString result = retained.join(QLatin1Char('\n')) + QLatin1Char('\n');
+        const auto checked = parse(result);
+        auto expected = original;
+        expected.erase(key);
+        if (!newName.isEmpty()) expected.insert(newName.toStdString(), *zone);
+        return checked == expected ? result : QString();
+    } catch (const toml::parse_error &) {
+        return {};
+    }
 }

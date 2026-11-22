@@ -28,6 +28,7 @@ DmeMenuBar {
     required property var creatureManagerDialog
     property var weatherDialog
     property var animationPreviewDialog
+    property var blackTekZonesDialog
     property var numberedZonesDialog
     required property var mapPropertiesDialog
     required property var statsDialog
@@ -533,6 +534,12 @@ DmeMenuBar {
             text: "Effects & Missiles..."
             enabled: Backend.datReader.loaded && Backend.sprReader.loaded && !!menuBar.animationPreviewDialog
             onTriggered: menuBar.animationPreviewDialog.open()
+        }
+        DmeMenuItem {
+            text: "BlackTek zones..."
+            visible: !!menuBar.blackTekZonesDialog && !!Backend.otbmReader.blackTekSpawnMode
+            enabled: !!menuBar.blackTekZonesDialog && !!Backend.otbmReader.blackTekSpawnMode && Backend.otbmReader.loaded
+            onTriggered: menuBar.blackTekZonesDialog.open()
         }
         Action {
             text: "Numbered zones..."

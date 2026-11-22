@@ -612,7 +612,7 @@ public:
     void setFloor(int floor);
     void setTileSize(int size);
 
-    Q_INVOKABLE bool loadMap(const QString &path);
+    Q_INVOKABLE bool loadMap(const QString &path, bool blackTek = false, bool recovery = false);
     Q_INVOKABLE void setClientAtlasIdentity(const QString &identity);
     Q_INVOKABLE void awaitInitialView();
     quint64 initialViewToken() const { return m_initialViewToken.load(); }

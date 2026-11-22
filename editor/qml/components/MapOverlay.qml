@@ -12,6 +12,15 @@ Item {
     required property var mapCtrl
     required property var settings
 
+    property string zoneFile: ""
+    property string zoneName: ""
+    property var blackTekZone: ({})
+    function updateBlackTekZone() {
+        const reader = Backend.otbmReader
+        blackTekZone = zoneName && reader.blackTekSpawnMode
+            ? reader.blackTekZoneGeometry(zoneFile, zoneName) : ({})
+        blackTekCanvas.requestPaint()
+    }
     property var entries: []
     property string dataKey: ""
     property string entriesKey: ""
@@ -39,7 +48,7 @@ Item {
 
     clip: true
     visible: settings.showClientBox || settings.showTooltips || settings.showWaypoints
-             || settings.showHouses || lightSourcesVisible || creaturesVisible
+             || settings.showHouses || lightSourcesVisible || creaturesVisible || blackTekCanvas.visible
 
     function refreshData(force) {
         if (!mapCtrl)
@@ -49,6 +58,7 @@ Item {
         const originY = mapCtrl.renderOriginY();
         currentOriginX = originX;
         currentOriginY = originY;
+        if (blackTekCanvas.visible) blackTekCanvas.requestPaint();
 
         const key = mapCtrl.floor + ":"
                 + Math.floor(originX) + ":" + Math.floor(originY) + ":"
@@ -72,6 +82,39 @@ Item {
         paintedOriginX = originX;
         paintedOriginY = originY;
         worldCanvas.requestPaint();
+    }
+
+    Canvas {
+        id: blackTekCanvas
+        anchors.fill: parent
+        visible: overlay.blackTekZone.z !== undefined && !!overlay.mapCtrl
+        onVisibleChanged: requestPaint()
+        onPaint: {
+            const ctx = getContext("2d")
+            ctx.clearRect(0, 0, width, height)
+            const zone = overlay.blackTekZone
+            if (!visible || !zone.tiles) return
+            const size = overlay.currentTileSize
+            const x = (worldX) => (worldX - overlay.currentOriginX) * size
+            const y = (worldY) => (worldY - overlay.currentOriginY) * size
+            ctx.strokeStyle = "#57cce8"
+            ctx.fillStyle = "rgba(87,204,232,0.2)"
+            ctx.lineWidth = 2
+            const floor = overlay.mapCtrl.floor
+            if (zone.hasRange && floor >= zone.z && floor <= zone.topFloor) {
+                ctx.strokeRect(x(zone.x), y(zone.y), (zone.right - zone.x + 1) * size,
+                               (zone.bottom - zone.y + 1) * size)
+            }
+            for (const tile of zone.tiles)
+                if (tile.z === floor) ctx.fillRect(x(tile.x), y(tile.y), size, size)
+            ctx.fillStyle = "#ffb443"
+            for (const spawn of zone.spawns) {
+                if (spawn.z !== floor) continue;
+                ctx.beginPath()
+                ctx.arc(x(spawn.x + 0.5), y(spawn.y + 0.5), Math.max(2, size * 0.23), 0, 2 * Math.PI)
+                ctx.fill()
+            }
+        }
     }
 
     function drawWaypoint(ctx, centerX, centerY) {
@@ -426,9 +469,11 @@ Item {
 
     Connections {
         target: Backend.otbmReader
+        ignoreUnknownSignals: true
         function onMapChanged() { overlay.refreshData(true); }
         function onLoadedChanged() { overlay.refreshData(true); }
         function onNotesChanged() { overlay.refreshData(true); }
+        function onBlackTekZonesChanged() { overlay.updateBlackTekZone(); }
     }
 
     Connections {

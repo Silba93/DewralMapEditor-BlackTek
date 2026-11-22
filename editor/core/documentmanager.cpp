@@ -206,6 +206,7 @@ void DocumentManager::removeRecoveryPath(const QString &path)
     const QString base = QFileInfo(path).completeBaseName();
     QDir dir = QFileInfo(path).dir();
     QFile::remove(path);
+    QFile::remove(path + QStringLiteral(".blacktek-zones.json"));
     QFile::remove(dir.filePath(base + QStringLiteral(".spawn.xml")));
     QFile::remove(dir.filePath(base + QStringLiteral(".house.xml")));
     QFile::remove(dir.filePath(base + QStringLiteral(".npc.xml")));

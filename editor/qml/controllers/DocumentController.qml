@@ -149,7 +149,10 @@ Item {
                 return;
             }
             if (Backend.otbmReader.loaded || Backend.otbmReader.filePath !== "") Backend.docMgr.newDocument();
-            Backend.otbmReader.newMap(width, height, profiles.profileVer(key), Backend.otbReader.majorVersion, Backend.otbReader.minorVersion, profiles.profile(key).canary ? 1 : 0);
+            const config = profiles.profile(key);
+            Backend.otbmReader.newMap(width, height, profiles.profileVer(key),
+                                      Backend.otbReader.majorVersion, Backend.otbReader.minorVersion,
+                                      config.canary ? 1 : 0, config.itemSource === "blacktek");
             Backend.docMgr.setCurrentProfileKey(String(key));
             profiles.bindCurrentDocument(String(key));
             mapView.centerOnTile(Math.floor(width / 2), Math.floor(height / 2), 7);
@@ -199,7 +202,8 @@ Item {
                 return;
             }
             if (Backend.otbmReader.loaded && Backend.otbmReader.filePath !== mapPath) Backend.docMgr.newDocument();
-            if (!mapView.loadMap(mapPath)) {
+            const isRecovery = !!activeRecovery && activeRecovery.recoveryPath === mapPath;
+            if (!mapView.loadMap(mapPath, profiles.activeConfiguration?.itemSource === "blacktek", isRecovery)) {
                 activeLoadPath = ""; activePreferredProfileKey = "";
                 startupWindow.loadingMap = false;
                 showToast("Could not begin loading map.");

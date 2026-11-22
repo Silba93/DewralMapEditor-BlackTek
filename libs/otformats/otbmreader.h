@@ -333,11 +333,17 @@ struct OtbmCanarySidecars {
     bool tileZoneNodes = false;         // zones stored as OTBM_TILE_ZONE nodes
 };
 
+#include "blacktekzones.h"
+
 class OtbmReader : public QObject
 {
     Q_OBJECT
     Q_PROPERTY(bool numberedZonesEnabled READ numberedZonesEnabled WRITE setNumberedZonesEnabled NOTIFY mapChanged)
     QML_ANONYMOUS
+    Q_PROPERTY(bool blackTekSpawnMode READ blackTekSpawnMode NOTIFY blackTekZonesChanged)
+    Q_PROPERTY(QString blackTekZoneFolder READ blackTekZoneFolder NOTIFY blackTekZonesChanged)
+    Q_PROPERTY(QVariantList blackTekZoneEntries READ blackTekZoneEntries NOTIFY blackTekZonesChanged)
+    Q_PROPERTY(QStringList blackTekZoneErrors READ blackTekZoneErrors NOTIFY blackTekZonesChanged)
     Q_PROPERTY(bool loaded READ isLoaded NOTIFY loadedChanged)
     Q_PROPERTY(bool canaryFormat READ isCanaryFormat NOTIFY loadedChanged)
     Q_PROPERTY(QString errorString READ errorString NOTIFY errorChanged)
@@ -378,7 +384,7 @@ public:
     QString filePath() const { return m_filePath; }
 
     Q_INVOKABLE bool newMap(int width, int height, int clientVersion,
-                            int otbMajor, int otbMinor, int canaryMode = -1);
+                            int otbMajor, int otbMinor, int canaryMode = -1, bool blackTek = false);
 
     Q_INVOKABLE void applyClientVersions(int clientVersion, int otbMajor, int otbMinor);
     Q_INVOKABLE bool setMapProperties(const QString &description,
@@ -445,6 +451,23 @@ public:
     Q_INVOKABLE void setTownTemple(int id, int x, int y, int z);
 
     Q_INVOKABLE bool loadFile(const QString &path);
+    void setBlackTekSpawnMode(bool enabled, bool readRecovery = false)
+    {
+        m_blackTekSpawnMode = enabled;
+        m_readBlackTekRecovery = enabled && readRecovery;
+    }
+    bool blackTekSpawnMode() const { return m_blackTekSpawnMode; }
+    QString blackTekZoneFolder() const { return m_blackTekZoneFolder; }
+    QStringList blackTekZoneErrors() const { return m_blackTekZoneData.errors; }
+    QVariantList blackTekZoneEntries() const;
+    Q_INVOKABLE QVariantMap blackTekZoneGeometry(const QString &sourceFile, const QString &name) const;
+    Q_INVOKABLE bool linkBlackTekZones(const QString &folder);
+    Q_INVOKABLE QString editBlackTekZoneFile(const QString &path, const QString &text);
+    Q_INVOKABLE QString replaceBlackTekZoneField(const QString &text, const QString &zoneName,
+                                                const QString &field, const QString &value, bool insertArrayEntry = false) const;
+    Q_INVOKABLE QString changeBlackTekZoneName(const QString &text, const QString &oldName, const QString &newName) const;
+    Q_INVOKABLE QString blackTekZoneFileText(const QString &path) const;
+    Q_SIGNAL void blackTekZonesChanged();
     Q_INVOKABLE QVariantMap inspectFileHeader(const QString &path) const;
     void setItemTypes(const OtbmItemTypes &types) { m_itemTypes = types; }
     bool loadFileDetached(const QString &path,
@@ -675,12 +698,16 @@ private:
             int entryX, entryY, entryZ;
         };
         std::vector<HouseSnapshot> houses;
+        QString zonePath;
+        QByteArray zoneText;
         qsizetype bytes = 0;
     };
     void recordTile(int x, int y, int z);
     void recordHouse(uint32_t id);
     void restoreHouseSnapshots(const std::vector<UndoAction::HouseSnapshot> &snapshots);
     void pushUndo(UndoAction &&action);
+    void restoreBlackTekZoneText(const QString &path, const QByteArray &bytes);
+    void refreshBlackTekZoneDiagnostics();
     void restoreSnapshots(const std::vector<TileSnapshot> &snapshots);
     static qsizetype estimateItemDynamicBytes(const OtbmMapItem &item);
     static qsizetype estimateActionBytes(const UndoAction &action);
@@ -731,6 +758,14 @@ private:
     uint32_t m_otbItemsMajor = 0;
     uint32_t m_otbItemsMinor = 0;
     QString m_description;
+    bool m_blackTekSpawnMode = false;
+    bool m_readBlackTekRecovery = false;
+    bool m_rebindingBlackTekZones = false;
+    QString m_blackTekZoneFolder;
+    BlackTekZoneLoadResult m_blackTekZoneData;
+    QMap<QString, QStringList> m_blackTekZoneFileDiagnostics;
+    QMap<QString, QByteArray> m_blackTekZoneEdits;
+    QMap<QString, QByteArray> m_blackTekZoneOriginals;
     QString m_spawnFile;
     QString m_houseFile;
     QByteArray m_descriptionOriginal;

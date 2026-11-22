@@ -201,7 +201,7 @@ void MapView::setShowLowerFloors(bool on)
     emit contentUpdated(); update();
 }
 
-bool MapView::loadMap(const QString &path)
+bool MapView::loadMap(const QString &path, bool blackTek, bool recovery)
 {
     if (!m_otbm || path.trimmed().isEmpty() || m_otbm->isLoading()) return false;
     saveViewPosition();
@@ -232,9 +232,10 @@ bool MapView::loadMap(const QString &path)
     auto result = std::make_shared<LoadResult>();
 
     // Qt-managed workers also own Qt thread-local state during teardown.
-    (void)QtConcurrent::run([guard, targetGuard, guiThread, generation, path, result, cancel, itemTypes] {
+    (void)QtConcurrent::run([guard, targetGuard, guiThread, generation, path, result, cancel, itemTypes, blackTek, recovery] {
         result->reader = std::make_unique<OtbmReader>();
         result->reader->setItemTypes(itemTypes);
+        result->reader->setBlackTekSpawnMode(blackTek, recovery);
         const auto publishProgress = [guard, targetGuard, generation](int value, const QString &stage) {
             if (!guard || !targetGuard) return;
             QMetaObject::invokeMethod(guard, [guard, targetGuard, generation, value, stage] {
