@@ -95,13 +95,14 @@ DmeDialog {
     }
 
     function pasteTeleportPosition() {
-        const match = Backend.fileTools.clipboardText().match(/^\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*$/);
-        if (!match)
+        const position = Backend.fileTools.positionFromText(
+            Backend.fileTools.clipboardText());
+        if (position.valid !== true)
             return false;
 
-        const x = Number(match[1]);
-        const y = Number(match[2]);
-        const z = Number(match[3]);
+        const x = position.x;
+        const y = position.y;
+        const z = position.z;
         if (x > teleX.to || y > teleY.to || z > teleZ.to)
             return false;
 
