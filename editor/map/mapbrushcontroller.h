@@ -119,6 +119,14 @@ public:
     int doorBrushId() const { return m_doorBrushId; }
     int &doodadVariant() { return m_doodadVariant; }
     int doodadVariant() const { return m_doodadVariant; }
+    int doodadDensity() const { return m_doodadDensity; }
+    bool setDoodadDensity(int density)
+    {
+        density = std::clamp(density, 1, 10);
+        if (m_doodadDensity == density) return false;
+        m_doodadDensity = density;
+        return true;
+    }
     int &doodadRotation() { return m_doodadRotation; }
     int doodadRotation() const { return m_doodadRotation; }
     QString &creatureBrush() { return m_creatureBrush; }
@@ -167,6 +175,7 @@ private:
     QString m_tableBrush;
     int m_doorBrushId = 0;
     int m_doodadVariant = -1;
+    int m_doodadDensity = 10;
     int m_doodadRotation = 0;
     QString m_creatureBrush;
     bool m_creatureBrushIsNpc = false;

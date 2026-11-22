@@ -54,11 +54,15 @@ Item {
         Text { visible: root.compact; anchors.centerIn: parent; text: "⋮"; color: Colors.c("muted"); font.pixelSize: 20 }
     }
     readonly property bool tibiaUi: Backend.uiTheme.style === "tibia-ui"
-    // Nine buttons and one separator always fit one row, even in a narrow sidebar.
-    readonly property real brushButtonSize: tibiaUi ? Math.min(root.compact ? 26 : 32, Math.max(1, Math.floor((brushContent.width - 6 - 9 * brushButtons.spacing) / 9))) : 24
+    readonly property bool doodadSelected: !!mapCtrl.doodadBrush && mapCtrl.doodadBrush.length > 0
+    readonly property int brushButtonCount: compact && doodadSelected ? 10 : 9
+    // Keep the brush controls in one row, including the separator.
+    readonly property real brushButtonSize: root.compact
+            ? Math.min(root.tibiaUi ? 26 : 24,
+                       Math.max(1, Math.floor((brushContent.width - 6 - root.brushButtonCount * brushButtons.spacing) / root.brushButtonCount)))
+            : root.tibiaUi ? Math.min(32, Math.max(1, Math.floor((brushContent.width - 6 - 9 * brushButtons.spacing) / 9))) : 24
 
-    implicitHeight: compact ? 30 : framed ? (collapsed ? 17 : 25+brushContent.implicitHeight+8) : tibiaUi ? brushContent.implicitHeight+16 : brushHeading.implicitHeight + brushContent.spacing + brushButtons.implicitHeight
-                    + (0) + (16)
+    implicitHeight: compact ? 30 : framed ? (collapsed ? 17 : 25+brushContent.implicitHeight+8) : brushContent.implicitHeight + 16
     Rectangle {
         anchors.fill: parent
         visible: !root.compact && !root.framed
@@ -97,8 +101,8 @@ Item {
             delegate: PaletteBrushButton {
                 required property string modelData
                 objectName: "fluentBrush" + modelData
-                width: root.tibiaUi ? root.brushButtonSize : 24
-                height: root.tibiaUi ? root.brushButtonSize : 24
+                width: root.brushButtonSize
+                height: root.brushButtonSize
                 active: root.mapCtrl.brushShape === modelData
                 round: modelData === "circle"
                 iconSize: 14
@@ -112,7 +116,7 @@ Item {
 
         Item {
             width: 6
-            height: root.tibiaUi ? root.brushButtonSize : 24
+            height: root.brushButtonSize
         }
 
         Repeater {
@@ -121,8 +125,8 @@ Item {
                 required property int modelData
                 required property int index
                 objectName: "brushRadius" + modelData
-                width: root.tibiaUi ? root.brushButtonSize : 24
-                height: root.tibiaUi ? root.brushButtonSize : 24
+                width: root.brushButtonSize
+                height: root.brushButtonSize
                 active: root.mapCtrl.brushSize === modelData
                 round: root.mapCtrl.brushShape === "circle"
                 iconSize: 6 + index * 2
@@ -137,6 +141,95 @@ Item {
                 }
             }
         }
+
+        PaletteBrushButton {
+            visible: root.compact && root.doodadSelected
+            width: visible ? root.brushButtonSize : 0
+            height: root.brushButtonSize
+            iconSize: 0
+            Accessible.name: "Doodad density"
+            ToolTip.visible: hovered
+            ToolTip.text: "Doodad density: " + root.mapCtrl.doodadDensity + "/10"
+            onClicked: compactDensityPopup.open()
+            Text {
+                anchors.centerIn: parent
+                text: "D"
+                color: Colors.c("text")
+                font.pixelSize: 10
+            }
+        }
     }
+
+    Row {
+        visible: !root.compact && root.doodadSelected
+        width: parent.width
+        height: visible ? 26 : 0
+        spacing: 6
+
+        Text {
+            id: densityLabel
+            text: "Density"
+            color: Colors.c("heading")
+            font.pixelSize: 11
+            anchors.verticalCenter: parent.verticalCenter
+        }
+
+        Slider {
+            id: doodadDensitySlider
+            width: Math.max(45, parent.width - densityLabel.implicitWidth - densityValue.implicitWidth - parent.spacing * 2)
+            from: 1
+            to: 10
+            stepSize: 1
+            snapMode: Slider.SnapAlways
+            value: root.mapCtrl.doodadDensity
+            anchors.verticalCenter: parent.verticalCenter
+            onMoved: root.mapCtrl.doodadDensity = Math.round(value)
+            ToolTip.visible: hovered
+            ToolTip.text: "Doodad density: " + Math.round(value) + "/10"
+        }
+
+        Text {
+            id: densityValue
+            text: Math.round(doodadDensitySlider.value) + "/10"
+            color: Colors.c("muted")
+            font.pixelSize: 10
+            anchors.verticalCenter: parent.verticalCenter
+        }
+    }
+    }
+
+    Popup {
+        id: compactDensityPopup
+        parent: root.Window.window ? root.Window.window.contentItem : root
+        readonly property point anchorPosition: root.mapToItem(parent, 0, root.height)
+        x: anchorPosition.x
+        y: anchorPosition.y
+        width: 250
+        padding: 12
+        contentItem: Row {
+            spacing: 8
+            Text {
+                text: "Density"
+                color: Colors.c("heading")
+                anchors.verticalCenter: parent.verticalCenter
+            }
+            Slider {
+                width: 170
+                from: 1
+                to: 10
+                stepSize: 1
+                snapMode: Slider.SnapAlways
+                value: root.mapCtrl.doodadDensity
+                anchors.verticalCenter: parent.verticalCenter
+                onMoved: root.mapCtrl.doodadDensity = Math.round(value)
+                ToolTip.visible: hovered
+                ToolTip.text: Math.round(value) + "/10"
+            }
+            Text {
+                text: root.mapCtrl.doodadDensity + "/10"
+                color: Colors.c("muted")
+                anchors.verticalCenter: parent.verticalCenter
+            }
+        }
     }
 }
