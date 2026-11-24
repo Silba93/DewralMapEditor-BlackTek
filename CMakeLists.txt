@@ -825,7 +825,7 @@ if(BUILD_TESTING)
         editor/core/creaturestore.cpp)
     target_include_directories(creature_store_test PRIVATE
         libs/otformats editor/core)
-    target_link_libraries(creature_store_test PRIVATE Qt6::Core)
+    target_link_libraries(creature_store_test PRIVATE Qt6::Gui)
     add_test(NAME creature_store COMMAND creature_store_test)
     add_executable(update_version_test EXCLUDE_FROM_ALL
         tests/update_version_test.cpp

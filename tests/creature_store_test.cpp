@@ -3,6 +3,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QTemporaryDir>
 #include <QUuid>
 
@@ -27,6 +28,12 @@ int main(int argc, char **argv)
     const QString indexPath = sourceDirectory.filePath(QStringLiteral("npcs.xml"));
     const QString monsterPath = sourceDirectory.filePath(QStringLiteral("item-monster.xml"));
     const QString itemNpcPath = sourceDirectory.filePath(QStringLiteral("item-npc.xml"));
+    const QString luaPath = sourceDirectory.filePath(QStringLiteral("blue_butterfly.lua"));
+    const QString luaDirectory = sourceDirectory.filePath(QStringLiteral("scripts/monsters/monsters"));
+    const QString luaFolderDefinition = QDir(luaDirectory).filePath(QStringLiteral("blue_butterfly.lua"));
+    const QString luaHelper = QDir(sourceDirectory.filePath(QStringLiteral("scripts/monsters")))
+                                  .filePath(QStringLiteral("monster_storages.lua"));
+    const QString duplicateXml = QDir(luaDirectory).filePath(QStringLiteral("blue_butterfly.xml"));
     if (!writeFile(definitionPath,
                    QByteArrayLiteral("<npc name=\"Alice\"><look type=\"128\" "
                                      "head=\"10\" body=\"20\" legs=\"30\" "
@@ -40,7 +47,26 @@ int main(int argc, char **argv)
                                         "</monster>"))
         || !writeFile(itemNpcPath,
                       QByteArrayLiteral("<npc name=\"Item NPC\">"
-                                        "<look lookitem=\"5710\"/></npc>"))) {
+                                        "<look lookitem=\"5710\"/></npc>"))
+        || !writeFile(luaPath,
+                      QByteArrayLiteral("-- Game.createMonsterType(\"comment fake\")\n"
+                                        "--[=[\nGame.createMonsterType(\"block comment fake\")\n]=]\n"
+                                        "local note = \"Game.createMonsterType('string fake')\"\n"
+                                        "local mtype = Game.createMonsterType(\"Blue Butterfly\")\n"
+                                        "local monster = {}\n"
+                                        "monster.name = \"butterfly\"\n"
+                                        "monster.outfit = { lookType = 227, lookHead = 12, lookBody = 34, "
+                                        "lookLegs = 56, lookFeet = 78 }\n"))
+        || !QDir().mkpath(luaDirectory)
+        || !QDir().mkpath(QFileInfo(luaHelper).absolutePath())
+        || !writeFile(luaFolderDefinition,
+                      QByteArrayLiteral("local mtype = Game.createMonsterType(\"Blue Butterfly\")\n"
+                                        "local monster = {}\nmonster.name = \"butterfly\"\n"
+                                        "monster.outfit = { lookType = 227, lookHead = 12, lookBody = 34, "
+                                        "lookLegs = 56, lookFeet = 78 }\n"))
+        || !writeFile(luaHelper, QByteArrayLiteral("local monsterStorage = {}\n"))
+        || !writeFile(duplicateXml,
+                      QByteArrayLiteral("<monster name=\"Blue Butterfly\"><look type=\"1\"/></monster>"))) {
         return EXIT_FAILURE;
     }
 
@@ -68,6 +94,21 @@ int main(int argc, char **argv)
         && monster && monster->lookType == 0 && monster->lookItem == 5710
         && itemNpc && itemNpc->lookType == 0 && itemNpc->lookItem == 5710;
 
+    const QVariantMap luaResult = store.importOtFile(luaPath);
+    const CreatureStore::CreatureType *butterfly = store.byNameAndType(
+        QStringLiteral("Blue Butterfly"), false);
+    passed = passed && luaResult.value(QStringLiteral("success")).toBool()
+        && butterfly && butterfly->lookType == 227 && butterfly->lookHead == 12
+        && butterfly->lookBody == 34 && butterfly->lookLegs == 56
+        && butterfly->lookFeet == 78;
+
+    const QVariantMap folderResult = store.importOtDirectory(
+        sourceDirectory.filePath(QStringLiteral("scripts")));
+    butterfly = store.byNameAndType(QStringLiteral("Blue Butterfly"), false);
+    passed = passed && folderResult.value(QStringLiteral("success")).toBool()
+        && butterfly && butterfly->lookType == 227
+        && folderResult.value(QStringLiteral("failed")).toInt() == 0;
+
     // Import, editing and persistence must retain the server ID, not the corpse
     // ID or a client ID tied to the currently loaded assets.
     passed = passed && store.saveCreature(
@@ -78,7 +119,7 @@ int main(int argc, char **argv)
     monster = reloaded.byNameAndType(QStringLiteral("Item Monster"), false);
     itemNpc = reloaded.byNameAndType(QStringLiteral("Item NPC"), true);
     passed = passed && monster && monster->lookType == 0 && monster->lookItem == 5710
-        && itemNpc && itemNpc->lookItem == 5710 && reloaded.count() == 3;
+        && itemNpc && itemNpc->lookItem == 5710 && reloaded.count() == 4;
 
     QDir(profileDirectory).removeRecursively();
     return passed ? EXIT_SUCCESS : EXIT_FAILURE;

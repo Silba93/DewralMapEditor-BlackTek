@@ -95,9 +95,9 @@ DmeDialog {
 
     FileDialog {
         id: importDialog
-        title: "Import monster and NPC XML files"
+        title: "Import creature definitions"
         fileMode: FileDialog.OpenFiles
-        nameFilters: ["XML files (*.xml)", "All files (*)"]
+        nameFilters: ["Creature definitions (*.xml *.lua)", "All files (*)"]
         onAccepted: {
             const result = Backend.creatureStore.importOtFiles(selectedFiles);
             dialog.statusError = result.success !== true;
@@ -113,17 +113,35 @@ DmeDialog {
 
     FolderDialog {
         id: serverFolderDialog
-        title: "Select the TFS/Canary server directory"
+        title: "Select the server, data, or creature folder"
         onAccepted: {
             const result = Backend.creatureStore.importOtDirectory(selectedFolder);
             dialog.statusError = result.success !== true;
             dialog.statusText = result.success
                     ? "Imported " + result.imported + " creature(s) from "
-                      + result.scanned + " XML file(s)"
+                      + result.scanned + " file(s)"
                       + (result.failed > 0 ? "; " + result.failed + " file(s) failed." : ".")
                     : (result.error || "Server directory import failed.");
             if (result.success && creatureList.count > 0)
                 dialog.selectRow(0);
+        }
+    }
+
+    DmeDialog {
+        id: deleteMonstersDialog
+        title: "Delete all monsters?"
+        movable: false
+        standardButtons: Dialog.Yes | Dialog.Cancel
+        contentItem: Label {
+            text: "Remove all monsters from the active editor profile's catalog?"
+        }
+        onAccepted: {
+            const removed = Backend.creatureStore.removeAllMonsters();
+            dialog.statusError = !removed;
+            dialog.statusText = removed ? "All monsters removed."
+                                        : Backend.creatureStore.errorString;
+            if (removed)
+                dialog.selectCategory("monster");
         }
     }
 
@@ -278,20 +296,30 @@ DmeDialog {
                         }
                     }
                     DmeButton {
-                        text: "Import XML..."
+                        text: "Import files..."
                         width: 137
                         onClicked: importDialog.open()
                     }
                     DmeButton {
                         text: "Import server..."
                         width: 137
-                        ToolTip.visible: serverImportHover.hovered
-                        ToolTip.delay: 500
-                        ToolTip.text: "Data Folder"
-                        HoverHandler {
-                            id: serverImportHover
-                        }
                         onClicked: serverFolderDialog.open()
+                    }
+                    DmeButton {
+                        width: 137
+                        text: "Open monsters folder"
+                        onClicked: {
+                            const opened = Backend.creatureStore.openMonstersFolder();
+                            dialog.statusError = !opened;
+                            dialog.statusText = opened ? "" : Backend.creatureStore.errorString;
+                        }
+                    }
+                    DmeButton {
+                        width: 137
+                        text: "Delete all monsters"
+                        enabled: dialog.category === "monster" && Backend.creatureStore.monsterCount > 0
+                        variant: "danger"
+                        onClicked: deleteMonstersDialog.open()
                     }
                 }
             }

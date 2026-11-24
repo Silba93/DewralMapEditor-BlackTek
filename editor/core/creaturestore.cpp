@@ -3,11 +3,13 @@
 #include "dmedatadir.h"
 
 #include <QCoreApplication>
+#include <QDesktopServices>
 #include <QDir>
 #include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
 #include <QSaveFile>
+#include <QRegularExpression>
 #include <QUrl>
 #include <QXmlStreamReader>
 #include <QXmlStreamWriter>
@@ -156,7 +158,7 @@ QVariantMap CreatureStore::creatureAt(int row) const
     return result;
 }
 
-bool CreatureStore::saveFile()
+bool CreatureStore::saveFile(const QVector<CreatureType> &creatures)
 {
     if (m_path.isEmpty()) {
         setErrorString(QStringLiteral("No client profile is loaded."));
@@ -176,7 +178,7 @@ bool CreatureStore::saveFile()
     xml.setAutoFormatting(true);
     xml.writeStartDocument();
     xml.writeStartElement(QStringLiteral("creatures"));
-    for (const CreatureType &c : m_creatures) {
+    for (const CreatureType &c : creatures) {
         xml.writeStartElement(QStringLiteral("creature"));
         xml.writeAttribute(QStringLiteral("name"), c.name);
         xml.writeAttribute(QStringLiteral("type"),
@@ -236,7 +238,7 @@ bool CreatureStore::saveCreature(const QString &originalName,
                   return a.name.compare(b.name, Qt::CaseInsensitive) < 0;
               });
     endResetModel();
-    const bool ok = saveFile();
+    const bool ok = saveFile(m_creatures);
     if (!ok) {
         beginResetModel();
         m_creatures = previous;
@@ -254,7 +256,7 @@ bool CreatureStore::removeCreature(const QString &name)
     beginResetModel();
     m_creatures.removeAt(row);
     endResetModel();
-    const bool ok = saveFile();
+    const bool ok = saveFile(m_creatures);
     if (!ok) {
         beginResetModel();
         m_creatures = previous;
@@ -264,7 +266,174 @@ bool CreatureStore::removeCreature(const QString &name)
     return ok;
 }
 
+bool CreatureStore::removeAllMonsters()
+{
+    if (monsterCount() == 0) {
+        setErrorString(QString());
+        return true;
+    }
+
+    QVector<CreatureType> npcs = m_creatures;
+    npcs.erase(std::remove_if(npcs.begin(), npcs.end(), [](const CreatureType &creature) {
+                   return !creature.isNpc;
+               }),
+               npcs.end());
+    if (!saveFile(npcs))
+        return false;
+
+    beginResetModel();
+    m_creatures.swap(npcs);
+    endResetModel();
+    emit countChanged();
+    return true;
+}
+
+bool CreatureStore::openMonstersFolder()
+{
+    if (m_path.isEmpty()) {
+        setErrorString(QStringLiteral("No client profile is loaded."));
+        return false;
+    }
+    const QString folder = QFileInfo(m_path).absolutePath();
+    if (!QDir().mkpath(folder) || !QDesktopServices::openUrl(QUrl::fromLocalFile(folder))) {
+        setErrorString(QStringLiteral("Could not open the monster catalog folder."));
+        return false;
+    }
+    setErrorString(QString());
+    return true;
+}
+
 namespace {
+QString maskLuaSource(const QString &source, QStringList &stringLiterals)
+{
+    QString masked;
+    masked.reserve(source.size());
+    for (qsizetype i = 0; i < source.size();) {
+        const QChar ch = source[i];
+        const bool comment = ch == QLatin1Char('-') && i + 1 < source.size()
+                          && source[i + 1] == QLatin1Char('-');
+        const qsizetype bracket = i + (comment ? 2 : 0);
+        if (bracket < source.size() && source[bracket] == QLatin1Char('[')) {
+            qsizetype open = bracket + 1;
+            while (open < source.size() && source[open] == QLatin1Char('='))
+                ++open;
+            if (open < source.size() && source[open] == QLatin1Char('[')) {
+                const QString close = QLatin1Char(']')
+                                    + QString(open - bracket - 1, QLatin1Char('='))
+                                    + QLatin1Char(']');
+                const qsizetype end = source.indexOf(close, open + 1);
+                if (comment) {
+                    masked.append(QLatin1Char(' '));
+                } else {
+                    const qsizetype literalIndex = stringLiterals.size();
+                    stringLiterals.append(end < 0 ? QString() : source.mid(open + 1, end - open - 1));
+                    masked.append(QStringLiteral("__DME_STRING_%1__").arg(literalIndex));
+                }
+                i = end < 0 ? source.size() : end + close.size();
+                continue;
+            }
+        }
+        if (comment) {
+            while (i < source.size() && source[i] != QLatin1Char('\n'))
+                ++i;
+            masked.append(QLatin1Char(' '));
+            continue;
+        }
+        if (ch == QLatin1Char('"') || ch == QLatin1Char('\'')) {
+            const QChar quote = ch;
+            QString value;
+            ++i;
+            while (i < source.size() && source[i] != quote) {
+                if (source[i] == QLatin1Char('\\') && i + 1 < source.size()) {
+                    const QChar escaped = source[i + 1];
+                    if (escaped == quote || escaped == QLatin1Char('\\')) value.append(escaped);
+                    else if (escaped == QLatin1Char('n')) value.append(QLatin1Char('\n'));
+                    else if (escaped == QLatin1Char('t')) value.append(QLatin1Char('\t'));
+                    else value.append(QLatin1Char('\\')).append(escaped);
+                    i += 2;
+                } else {
+                    value.append(source[i++]);
+                }
+            }
+            if (i < source.size()) ++i;
+            const qsizetype literalIndex = stringLiterals.size();
+            stringLiterals.append(std::move(value));
+            masked.append(QStringLiteral("__DME_STRING_%1__").arg(literalIndex));
+            continue;
+        }
+        masked.append(ch);
+        ++i;
+    }
+    return masked;
+}
+
+bool readLuaCreatureDefinition(const QString &path,
+                               CreatureStore::CreatureType &creature,
+                               QString &error)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        error = file.errorString();
+        return false;
+    }
+    QStringList stringLiterals;
+    const QString text = maskLuaSource(QString::fromUtf8(file.readAll()), stringLiterals);
+    static const QRegularExpression constructor(
+        QStringLiteral("Game\\s*\\.\\s*createMonsterType\\s*\\(\\s*__DME_STRING_(\\d+)__\\s*\\)"));
+    const auto registeredMatch = constructor.match(text);
+    if (!registeredMatch.hasMatch()) {
+        static const QRegularExpression constructorCall(
+            QStringLiteral("Game\\s*\\.\\s*createMonsterType\\s*\\("));
+        if (constructorCall.match(text).hasMatch())
+            error = QStringLiteral("Monster type name must be a string literal.");
+        return false;
+    }
+    const int registeredIndex = registeredMatch.captured(1).toInt();
+    if (registeredIndex < 0 || registeredIndex >= stringLiterals.size()) {
+        error = QStringLiteral("Monster type name is invalid.");
+        return false;
+    }
+    creature.name = stringLiterals.at(registeredIndex).trimmed();
+    static const QRegularExpression displayName(
+        QStringLiteral("monster\\s*\\.\\s*name\\s*=\\s*__DME_STRING_(\\d+)__"));
+    const auto displayMatch = displayName.match(text);
+    if (displayMatch.hasMatch()) {
+        const int displayIndex = displayMatch.captured(1).toInt();
+        if (displayIndex >= 0 && displayIndex < stringLiterals.size()) {
+            const QString display = stringLiterals.at(displayIndex).trimmed();
+            if (creature.name.compare(display, Qt::CaseInsensitive) == 0)
+                creature.name = display;
+        }
+    }
+    if (creature.name.isEmpty()) {
+        error = QStringLiteral("Monster type name is empty.");
+        return false;
+    }
+
+    const int outfitStart = text.indexOf(
+        QRegularExpression(QStringLiteral("monster\\s*\\.\\s*outfit\\s*=\\s*\\{")));
+    if (outfitStart >= 0) {
+        const int openBrace = text.indexOf(QLatin1Char('{'), outfitStart);
+        const int closeBrace = text.indexOf(QLatin1Char('}'), openBrace + 1);
+        if (closeBrace >= 0) {
+            const QString outfit = text.mid(openBrace + 1, closeBrace - openBrace - 1);
+            const auto readNumber = [&outfit](const QString &field) {
+                const QRegularExpression expression(
+                    QStringLiteral("(?:^|[,\\s])%1\\s*=\\s*(\\d+)(?=\\s*(?:,|$))").arg(field));
+                const auto match = expression.match(outfit);
+                return match.hasMatch() ? match.captured(1).toInt() : 0;
+            };
+            creature.lookType = readNumber(QStringLiteral("lookType"));
+            creature.lookItem = readNumber(QStringLiteral("lookTypeEx"));
+            creature.lookHead = readNumber(QStringLiteral("lookHead"));
+            creature.lookBody = readNumber(QStringLiteral("lookBody"));
+            creature.lookLegs = readNumber(QStringLiteral("lookLegs"));
+            creature.lookFeet = readNumber(QStringLiteral("lookFeet"));
+        }
+    }
+    return true;
+}
+
 bool readCreatureDefinition(const QString &path,
                             CreatureStore::CreatureType &creature,
                             QString *error)
@@ -328,6 +497,20 @@ void collectCreatureImportFile(const QString &path,
                                QVector<CreatureStore::CreatureType> &imported,
                                QStringList &failures)
 {
+    if (QFileInfo(path).suffix().compare(QLatin1String("lua"), Qt::CaseInsensitive) == 0) {
+        CreatureStore::CreatureType creature;
+        QString error;
+        if (!readLuaCreatureDefinition(path, creature, error)) {
+            failures.append(QStringLiteral("%1: %2")
+                                .arg(QFileInfo(path).fileName(), error.isEmpty()
+                                    ? QStringLiteral("No monster type definition was found.")
+                                    : error));
+            return;
+        }
+        imported.append(std::move(creature));
+        return;
+    }
+
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
         failures.append(QStringLiteral("%1: %2")
@@ -433,10 +616,18 @@ QVariantMap CreatureStore::importOtDirectory(const QString &pathOrUrl)
     const bool rootIsNpcDirectory = rootName == QLatin1String("npc")
                                  || rootName == QLatin1String("npcs");
 
-    QDirIterator iterator(root.absolutePath(), {QStringLiteral("*.xml")},
+    QDirIterator iterator(root.absolutePath(),
+                          {QStringLiteral("*.xml"), QStringLiteral("*.lua")},
                           QDir::Files, QDirIterator::Subdirectories);
-    while (iterator.hasNext()) {
-        const QString filePath = iterator.next();
+    QStringList files;
+    while (iterator.hasNext()) files.append(iterator.next());
+    std::sort(files.begin(), files.end(), [](const QString &left, const QString &right) {
+        const bool leftLua = QFileInfo(left).suffix().compare(QLatin1String("lua"), Qt::CaseInsensitive) == 0;
+        const bool rightLua = QFileInfo(right).suffix().compare(QLatin1String("lua"), Qt::CaseInsensitive) == 0;
+        if (leftLua != rightLua) return !leftLua;
+        return left.compare(right, Qt::CaseInsensitive) < 0;
+    });
+    for (const QString &filePath : files) {
         const QFileInfo info(filePath);
         const QString baseName = info.fileName().toLower();
         if (baseName == QLatin1String("monsters.xml")
@@ -458,22 +649,38 @@ QVariantMap CreatureStore::importOtDirectory(const QString &pathOrUrl)
                           || part == QLatin1String("npc")
                           || part == QLatin1String("npcs");
         }
+        const bool isLua = info.suffix().compare(QLatin1String("lua"), Qt::CaseInsensitive) == 0;
+        if (isLua && (!inMonsterDirectory || baseName.contains(QLatin1Char('#')))) continue;
         if (!inMonsterDirectory && !inNpcDirectory) continue;
 
-        ++candidateCount;
-        CreatureType creature;
-        QString error;
-        if (readCreatureDefinition(filePath, creature, &error)) {
-            if (inNpcDirectory && !inMonsterDirectory) creature.isNpc = true;
+        if (isLua) {
+            CreatureType creature;
+            QString error;
+            if (!readLuaCreatureDefinition(filePath, creature, error)) {
+                if (!error.isEmpty()) {
+                    ++candidateCount;
+                    failures.append(QStringLiteral("%1: %2").arg(relative, error));
+                }
+                continue;
+            }
+            ++candidateCount;
             imported.append(std::move(creature));
         } else {
-            failures.append(QStringLiteral("%1: %2").arg(relative, error));
+            ++candidateCount;
+            CreatureType creature;
+            QString error;
+            if (readCreatureDefinition(filePath, creature, &error)) {
+                if (inNpcDirectory && !inMonsterDirectory) creature.isNpc = true;
+                imported.append(std::move(creature));
+            } else {
+                failures.append(QStringLiteral("%1: %2").arg(relative, error));
+            }
         }
     }
 
     if (candidateCount == 0) {
         const QString error = QStringLiteral(
-            "No monster or NPC XML directories were found. Select the server root, data folder, or a monster/NPC folder.");
+            "No monster or NPC definitions were found. Select the server root, data folder, or a monster/NPC folder.");
         setErrorString(error);
         return {{QStringLiteral("success"), false},
                 {QStringLiteral("error"), error}};
@@ -518,7 +725,7 @@ QVariantMap CreatureStore::storeImported(QVector<CreatureType> imported,
                   return a.name.compare(b.name, Qt::CaseInsensitive) < 0;
               });
     endResetModel();
-    const bool saved = saveFile();
+    const bool saved = saveFile(m_creatures);
     if (!saved) {
         beginResetModel();
         m_creatures = previous;

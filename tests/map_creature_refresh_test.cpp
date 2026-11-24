@@ -603,6 +603,22 @@ int main(int argc, char **argv)
 
     if (!require(creatures.loadForDir(profile), "Could not reload creature definitions")
         || !expectOutfits(view, blue, green)) return 1;
+    if (!require(creatures.removeAllMonsters()
+                     && creatures.monsterCount() == 0 && creatures.npcCount() == 1,
+                 "Bulk monster removal did not preserve the NPC catalog")
+        || !expectOutfits(view, {}, green)) return 1;
+    const auto *ratTile = map.tileAt(1, 1, 7);
+    const auto *aliceTile = map.tileAt(2, 1, 7);
+    if (!require(ratTile && ratTile->creature_name == QStringLiteral("Rat")
+                     && aliceTile && aliceTile->creature_name == QStringLiteral("Alice"),
+                 "Bulk catalog removal changed placed creatures")) return 1;
+    if (!require(creatures.loadForDir(profile)
+                     && creatures.monsterCount() == 0 && creatures.npcCount() == 1,
+                 "Bulk monster removal did not persist")
+        || !expectOutfits(view, {}, green)) return 1;
+    if (!require(creatures.importOtDirectory(server).value(QStringLiteral("success")).toBool(),
+                 "Could not restore the monster catalog after bulk removal")
+        || !expectOutfits(view, blue, green)) return 1;
     if (!require(creatures.removeCreature(QStringLiteral("Alice")), "Could not remove test NPC")
         || !expectOutfits(view, blue, {})) return 1;
     if (!require(view.renderOriginX() == originX && view.renderOriginY() == originY

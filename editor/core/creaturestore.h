@@ -62,6 +62,8 @@ public:
                                   int lookHead, int lookBody,
                                   int lookLegs, int lookFeet);
     Q_INVOKABLE bool removeCreature(const QString &name);
+    Q_INVOKABLE bool removeAllMonsters();
+    Q_INVOKABLE bool openMonstersFolder();
     Q_INVOKABLE QVariantMap importOtFile(const QString &pathOrUrl);
     Q_INVOKABLE QVariantMap importOtFiles(const QVariantList &pathsOrUrls);
     Q_INVOKABLE QVariantMap importOtDirectory(const QString &pathOrUrl);
@@ -78,7 +80,7 @@ private:
     friend class ClientLoadService;
     friend struct ClientPreparedState;
     bool loadFile(const QString &path);
-    bool saveFile();
+    bool saveFile(const QVector<CreatureType> &creatures);
     QVariantMap storeImported(QVector<CreatureType> imported,
                               const QStringList &failures);
     void setErrorString(const QString &error);
