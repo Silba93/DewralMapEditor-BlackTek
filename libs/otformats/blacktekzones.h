@@ -12,6 +12,7 @@ struct BlackTekZone
     struct CreatureEntry {
         QString category;
         QString name;
+        QStringList names;
         int index = 0;
         Position3D position;
         bool hasPosition = false;

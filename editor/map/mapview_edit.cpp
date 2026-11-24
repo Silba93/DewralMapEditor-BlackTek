@@ -250,7 +250,11 @@ void MapView::refreshUndoRedoTilesLocked()
 
             auto floorIt = tileIndex.find(z);
             if (rebuilt.empty()) {
-                if (floorIt != tileIndex.end()) {
+                const auto spawnFloor = m_blackTekSpawnChunks.constFind(z);
+                if (spawnFloor != m_blackTekSpawnChunks.cend() && spawnFloor->contains(key)) {
+                    tileIndex[z][key].clear();
+                    m_blackTekSpawnOnlyChunks[z].insert(key);
+                } else if (floorIt != tileIndex.end()) {
                     floorIt->remove(key);
                     if (floorIt->isEmpty()) tileIndex.erase(floorIt);
                 }
@@ -305,6 +309,7 @@ void MapView::onTileEdited(int x, int y, int z)
         while (indexedTileCount < static_cast<qsizetype>(tiles.size())) {
             const OtbmTile *tile = &tiles[static_cast<size_t>(indexedTileCount++)];
             m_chunkStore.bounds()[tile->z].include(tile->x, tile->y);
+            m_mapTileBounds[tile->z].include(tile->x, tile->y);
             const int tileCx = floorDiv(tile->x, kChunkTiles);
             const int tileCy = floorDiv(tile->y, kChunkTiles);
             auto &chunkTiles = m_chunkStore.tiles()[tile->z][chunkKey(tileCx, tileCy)];
@@ -357,8 +362,12 @@ void MapView::flushEditedChunksLocked()
                     static_cast<int>(static_cast<qint32>(position & 0xffffffffu));
                 if (const OtbmTile *tile = m_otbm->tileAt(tileX, tileY, zc.first)) {
                     bool tileAnimated = false;
-                    appendItemQuads(tile, quads, &tileAnimated);
+                    const auto *blackTekCreature = tile->creature_name.isEmpty()
+                        ? blackTekCreatureAt(tileX, tileY, zc.first) : nullptr;
+                    appendItemQuads(tile, quads, &tileAnimated, blackTekCreature);
                     animated = animated || tileAnimated;
+                } else if (const auto *creature = blackTekCreatureAt(tileX, tileY, zc.first)) {
+                    appendCreatureQuads(creature, tileX, tileY, 0, 0, quads);
                 }
             }
 

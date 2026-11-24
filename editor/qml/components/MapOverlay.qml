@@ -12,33 +12,6 @@ Item {
     required property var mapCtrl
     required property var settings
 
-    property string zoneFile: ""
-    property string zoneName: ""
-    property var blackTekZone: ({})
-    property var blackTekAreas: ({})
-    readonly property real blackTekMargin: 192
-    function refreshBlackTekCamera(force) {
-        if (!blackTekVisible) return
-        if (force || currentTileSize !== blackTekCanvas.paintedTileSize
-                || Math.abs(pixelOriginX - blackTekCanvas.paintedX) * currentTileSize > blackTekMargin / 2
-                || Math.abs(pixelOriginY - blackTekCanvas.paintedY) * currentTileSize > blackTekMargin / 2)
-            blackTekCanvas.requestPaint()
-    }
-    readonly property bool blackTekVisible: (!!mapCtrl?.showBlackTekZones || !!mapCtrl?.blackTekZonePaintActive
-        || !!mapCtrl?.creatureBrush)
-        && !!Backend.otbmReader.blackTekSpawnMode && Backend.otbmReader.loaded
-    onBlackTekVisibleChanged: updateBlackTekAreas()
-
-    function updateBlackTekAreas() {
-        blackTekAreas = blackTekVisible ? Backend.otbmReader.blackTekZoneAreas(mapCtrl.floor) : ({})
-        blackTekCanvas.requestPaint()
-    }
-    function updateBlackTekZone() {
-        const reader = Backend.otbmReader
-        blackTekZone = zoneName && reader.blackTekSpawnMode
-            ? reader.blackTekZoneGeometry(zoneFile, zoneName) : ({})
-        blackTekCanvas.requestPaint()
-    }
     property var entries: []
     property string dataKey: ""
     property string entriesKey: ""
@@ -66,7 +39,8 @@ Item {
 
     clip: true
     visible: settings.showClientBox || settings.showTooltips || settings.showWaypoints
-             || settings.showHouses || lightSourcesVisible || creaturesVisible || blackTekVisible
+             || settings.showHouses || lightSourcesVisible || creaturesVisible
+             || !!mapCtrl?.blackTekZonePaintActive
 
     function refreshData(force) {
         if (!mapCtrl)
@@ -76,7 +50,6 @@ Item {
         const originY = mapCtrl.renderOriginY();
         currentOriginX = originX;
         currentOriginY = originY;
-        refreshBlackTekCamera(false);
 
         const key = mapCtrl.floor + ":"
                 + Math.floor(originX) + ":" + Math.floor(originY) + ":"
@@ -100,97 +73,6 @@ Item {
         paintedOriginX = originX;
         paintedOriginY = originY;
         worldCanvas.requestPaint();
-    }
-
-    Canvas {
-        id: blackTekCanvas
-        property real paintedX: 0
-        property real paintedY: 0
-        property real paintedTileSize: 1
-        width: overlay.width + 2 * overlay.blackTekMargin
-        height: overlay.height + 2 * overlay.blackTekMargin
-        transformOrigin: Item.TopLeft
-        scale: overlay.currentTileSize / paintedTileSize
-        x: (paintedX - overlay.pixelOriginX) * overlay.currentTileSize - overlay.blackTekMargin * scale
-        y: (paintedY - overlay.pixelOriginY) * overlay.currentTileSize - overlay.blackTekMargin * scale
-        visible: overlay.blackTekVisible
-        onVisibleChanged: requestPaint()
-        onPaint: {
-            const ctx = getContext("2d")
-            ctx.clearRect(0, 0, width, height)
-            const zone = overlay.blackTekZone
-            if (!visible) return
-            // Anchor the texture to the same pixel-snapped camera as the map.
-            // Pan moves the buffered texture between paints.
-            paintedX = overlay.pixelOriginX
-            paintedY = overlay.pixelOriginY
-            paintedTileSize = overlay.currentTileSize
-            const size = paintedTileSize
-            const margin = overlay.blackTekMargin
-            const x = (worldX) => (worldX - paintedX) * size + margin
-            const y = (worldY) => (worldY - paintedY) * size + margin
-            function paintAreas(areas, color) {
-                if (!areas?.length) return
-                ctx.beginPath()
-                for (const area of areas) {
-                    const left = x(area.x), top = y(area.y)
-                    const right = left + area.width * size, bottom = top + area.height * size
-                    if (right <= 0 || bottom <= 0 || left >= width || top >= height) continue
-                    ctx.rect(Math.max(0, left), Math.max(0, top),
-                             Math.min(width, right) - Math.max(0, left),
-                             Math.min(height, bottom) - Math.max(0, top))
-                }
-                ctx.fillStyle = color
-                ctx.fill()
-            }
-            paintAreas(overlay.blackTekAreas.world, "rgba(87,204,232,0.22)")
-            paintAreas(overlay.blackTekAreas.spawn, "rgba(255,152,53,0.32)")
-            const floor = overlay.mapCtrl.floor
-            const preview = overlay.mapCtrl.blackTekZonePaintPreview || []
-            ctx.fillStyle = "rgba(255,205,64,0.62)"
-            for (const tile of preview)
-                if (tile.z === floor) ctx.fillRect(x(tile.x), y(tile.y), size, size)
-            ctx.font = "bold 12px sans-serif"
-            ctx.textAlign = "center"
-            ctx.textBaseline = "middle"
-            ctx.strokeStyle = "#171717"
-            ctx.lineWidth = 4
-            for (const label of (overlay.blackTekAreas.labels || [])) {
-                const left = x(label.x), top = y(label.y)
-                if (left < 0 || top < 0 || left > width || top > height) continue
-                ctx.fillStyle = label.spawn ? "#ffc276" : "#a5ecff"
-                ctx.strokeText(label.name, left, top - 8)
-                ctx.fillText(label.name, left, top - 8)
-                ctx.font = "11px sans-serif"
-                ctx.strokeText(label.type, left, top + 8)
-                ctx.fillText(label.type, left, top + 8)
-                ctx.font = "bold 12px sans-serif"
-            }
-            if (zone.tiles) {
-                ctx.strokeStyle = "#57cce8"
-                ctx.fillStyle = "rgba(87,204,232,0.2)"
-                ctx.lineWidth = 2
-                if (zone.hasRange && floor >= zone.z && floor <= zone.topFloor) {
-                    ctx.strokeRect(x(zone.x), y(zone.y), (zone.right - zone.x + 1) * size,
-                                   (zone.bottom - zone.y + 1) * size)
-                }
-                for (const tile of zone.tiles)
-                    if (tile.z === floor) ctx.fillRect(x(tile.x), y(tile.y), size, size)
-            }
-            const markerRadius = Math.max(2, size * 0.23)
-            ctx.lineWidth = 2
-            ctx.strokeStyle = "#ffb443"
-            ctx.fillStyle = "#ffb443"
-            for (const spawn of (overlay.blackTekAreas.creatures || [])) {
-                const centerX = x(spawn.x + 0.5), centerY = y(spawn.y + 0.5)
-                if (centerX < -markerRadius || centerY < -markerRadius
-                        || centerX > width + markerRadius || centerY > height + markerRadius) continue
-                ctx.beginPath()
-                ctx.arc(centerX, centerY, markerRadius, 0, 2 * Math.PI)
-                if (spawn.relative) ctx.stroke()
-                else ctx.fill()
-            }
-        }
     }
 
     function drawWaypoint(ctx, centerX, centerY) {
@@ -537,11 +419,9 @@ Item {
         function onContentUpdated() {
             overlay.currentOriginX = overlay.mapCtrl.renderOriginX();
             overlay.currentOriginY = overlay.mapCtrl.renderOriginY();
-            overlay.refreshBlackTekCamera(false);
             overlay.scheduleRefresh(false);
         }
-        function onBlackTekZonePaintPreviewChanged() { blackTekCanvas.requestPaint(); }
-        function onFloorChanged() { overlay.updateBlackTekAreas(); overlay.refreshData(true); }
+        function onFloorChanged() { overlay.refreshData(true); }
         function onTileSizeChanged() { overlay.refreshData(true); }
     }
 
@@ -551,7 +431,6 @@ Item {
         function onMapChanged() { overlay.refreshData(true); }
         function onLoadedChanged() { overlay.refreshData(true); }
         function onNotesChanged() { overlay.refreshData(true); }
-        function onBlackTekZonesChanged() { overlay.updateBlackTekAreas(); overlay.updateBlackTekZone(); }
     }
 
     Connections {
@@ -609,7 +488,7 @@ Item {
             overlay.refreshData(force);
         }
     }
-    Component.onCompleted: { updateBlackTekAreas(); refreshData(true); }
+    Component.onCompleted: refreshData(true)
 
     // Editor labels have their own zoom cutoff; creature sprites and Preview are unaffected.
     QtObject {

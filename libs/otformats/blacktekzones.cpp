@@ -183,6 +183,7 @@ QString collectEntries(const toml::table &table, BlackTekZone &zone, const ZoneD
         if (names.isEmpty())
             diagnostics.warn(QStringLiteral("%1 has no usable creature name").arg(label));
         creature.name = names.join(QStringLiteral(" / "));
+        creature.names = std::move(names);
         creature.intervalSeconds = diagnostics.unsignedField(*entry, "interval", npc ? 0u : 60u, context);
         if (creature.intervalSeconds > maxIntervalSeconds)
             diagnostics.warn(QStringLiteral("%1interval wraps in the server's millisecond timer").arg(context));

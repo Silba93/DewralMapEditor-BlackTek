@@ -5486,35 +5486,42 @@ void OtbmReader::restoreBlackTekZoneText(const QString &path, const QByteArray &
     emit blackTekZonesChanged();
 }
 
-QVariantMap OtbmReader::blackTekZoneAreas(int floor) const
+QVector<OtbmReader::BlackTekCreatureSpawn> OtbmReader::blackTekCreatureSpawns() const
 {
-    QVariantList world, spawn, labels, creatures;
+    QVector<BlackTekCreatureSpawn> spawns;
+    if (!m_blackTekSpawnMode)
+        return spawns;
+
+    for (const auto &zone : m_blackTekZoneData.zones) {
+        if (zone.playerRelative)
+            continue;
+        const auto origin = zone.hasRange ? zone.rangeStart
+            : BlackTekZone::Position3D{zone.minX, zone.minY, zone.floor};
+        for (const auto &creature : zone.creatures) {
+            if (creature.names.isEmpty())
+                continue;
+            const auto position = creature.hasPosition ? creature.position : origin;
+            spawns.append({position.x, position.y, position.z, creature.names,
+                           creature.category == QLatin1String("npcs")});
+        }
+    }
+    return spawns;
+}
+
+QVariantList OtbmReader::blackTekZoneLabels(int floor) const
+{
+    QVariantList labels;
     for (const auto &zone : m_blackTekZoneData.zones) {
         const bool isSpawn = !zone.spawnType.isEmpty();
-        auto &areas = isSpawn ? spawn : world;
         QRect bounds;
         if (zone.worldPositions.isEmpty() && zone.hasRange && floor >= std::min(zone.rangeStart.z, zone.rangeEnd.z)
             && floor <= std::max(zone.rangeStart.z, zone.rangeEnd.z)) {
             bounds = QRect(zone.minX, zone.minY, zone.maxX - zone.minX + 1, zone.maxY - zone.minY + 1);
-            areas.append(bounds);
         }
         for (const auto &position : zone.worldPositions) {
             if (position.z != floor) continue;
             const QRect tile(position.x, position.y, 1, 1);
-            areas.append(tile);
             bounds = bounds.united(tile);
-        }
-        const BlackTekZone::Position3D origin = zone.hasRange ? zone.rangeStart
-            : BlackTekZone::Position3D{zone.minX, zone.minY, zone.floor};
-        for (const auto &creature : zone.creatures) {
-            auto tile = creature.hasPosition ? creature.position : BlackTekZone::Position3D{};
-            if (zone.playerRelative || !creature.hasPosition) {
-                tile.x += origin.x;
-                tile.y += origin.y;
-                tile.z += origin.z;
-            }
-            if (tile.z == floor)
-                creatures.append(QVariantMap{{"x", tile.x}, {"y", tile.y}, {"relative", zone.playerRelative}});
         }
         if (!bounds.isEmpty()) {
             QString type = QStringLiteral("World Zone");
@@ -5548,12 +5555,13 @@ QVariantMap OtbmReader::blackTekZoneAreas(int floor) const
             if (!details.isEmpty())
                 type += QStringLiteral(": ") + details.join(QStringLiteral(", "));
             const QString name = zone.name.isEmpty() ? QStringLiteral("Unnamed zone") : zone.name;
-            labels.append(QVariantMap{{"name", name}, {"type", type}, {"spawn", isSpawn},
-                                      {"x", bounds.x() + bounds.width() / 2.0},
-                                      {"y", bounds.y() + bounds.height() / 2.0}});
+            labels.append(QVariantMap{{"name", name}, {"description", type},
+                                      {"color", isSpawn ? QStringLiteral("#ffc276") : QStringLiteral("#a5ecff")},
+                                      {"flags", 0}, {"worldX", bounds.x() + bounds.width() / 2.0},
+                                      {"worldY", bounds.y() + bounds.height() / 2.0}});
         }
     }
-    return {{"world", world}, {"spawn", spawn}, {"labels", labels}, {"creatures", creatures}};
+    return labels;
 }
 
 QVariantMap OtbmReader::blackTekZoneGeometry(const QString &sourceFile, const QString &name) const

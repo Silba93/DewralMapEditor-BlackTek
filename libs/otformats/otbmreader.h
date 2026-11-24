@@ -460,7 +460,14 @@ public:
     QString blackTekZoneFolder() const { return m_blackTekZoneFolder; }
     QStringList blackTekZoneErrors() const { return m_blackTekZoneData.errors; }
     QVariantList blackTekZoneEntries() const;
-    Q_INVOKABLE QVariantMap blackTekZoneAreas(int floor) const;
+    struct BlackTekCreatureSpawn {
+        int x, y, z;
+        QStringList names;
+        bool isNpc;
+    };
+    QVector<BlackTekCreatureSpawn> blackTekCreatureSpawns() const;
+    const QVector<BlackTekZone> &blackTekZones() const { return m_blackTekZoneData.zones; }
+    Q_INVOKABLE QVariantList blackTekZoneLabels(int floor) const;
     Q_INVOKABLE QVariantMap blackTekZoneAt(int x, int y, int floor) const;
     QVariantMap blackTekSpawnZoneAt(int x, int y, int floor, bool npc) const;
     Q_INVOKABLE QVariantMap blackTekZoneGeometry(const QString &sourceFile, const QString &name) const;

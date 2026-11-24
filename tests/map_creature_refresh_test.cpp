@@ -399,6 +399,96 @@ int main(int argc, char **argv)
     if (!require(creatures.saveCreature({}, QStringLiteral("Rat"), false, 1, 0, 0, 0, 0, 0)
                      && creatures.saveCreature({}, QStringLiteral("Alice"), true, 1, 0, 0, 0, 0, 0),
                  "Could not create initial creature definitions")) return 1;
+    {
+        const QByteArray monsterZone = "[Monsters]\npositions = [\"1:1:7\"]\n"
+            "spawn_type = \"monster\"\npolicy = \"fixed\"\n"
+            "monsters = [{ list = [{ name = \"Missing Outfit\" }, { name = \"Rat\" }], "
+            "position = \"0:0:0\" }]\n";
+        const QByteArray npcZone = "[NPCs]\npositions = [\"2:1:7\"]\n"
+            "spawn_type = \"npc\"\npolicy = \"fixed\"\n"
+            "npcs = [{ name = \"Alice\", position = \"0:0:0\" }]\n";
+        const QByteArray distantZone = "[Distant]\npositions = [\"1000:1000:7\"]\n";
+        const QString zones = directory.filePath(QStringLiteral("render-zones"));
+        const QString zoneFile = QDir(zones).filePath(QStringLiteral("zones.toml"));
+        OtbmReader blackTekMap;
+        if (!require(QDir().mkpath(zones) && writeFile(zoneFile, monsterZone + npcZone + distantZone)
+                         && blackTekMap.newMap(64, 64, 860, 2, 22)
+                         && blackTekMap.placeItem(1, 1, 7, 1000, 0, false, true)
+                         && blackTekMap.placeItem(2, 1, 7, 1000, 0, false, true)
+                         && blackTekMap.placeItem(33, 1, 7, 1000, 0, false, true),
+                     "Could not prepare BlackTek rendering fixtures")) return 1;
+        blackTekMap.setBlackTekSpawnMode(true);
+        if (!require(blackTekMap.linkBlackTekZones(zones), "Could not load render zones")) return 1;
+
+        MapView blackTekView;
+        blackTekView.setOtb(&otb);
+        blackTekView.setDat(&dat);
+        blackTekView.setSpr(&spr);
+        blackTekView.setCreatureStore(&creatures);
+        blackTekView.setOtbm(&blackTekMap);
+        blackTekView.setSize({320, 240});
+        blackTekView.setTileSize(32);
+        blackTekView.centerOnTile(1, 1, 7);
+        if (!expectOutfits(blackTekView, red, red)) return 1;
+        std::vector<float> worldZones, spawnZones, selectedZones, borders, markers, paint;
+        const auto collectZones = [&] {
+            blackTekView.renderCollectBlackTekZoneInstances(
+                worldZones, spawnZones, selectedZones, borders, markers, paint);
+        };
+        collectZones();
+        if (!require(!borders.empty(), "Unselected BlackTek zones must have solid outlines")) return 1;
+        blackTekView.setBlackTekZonePreview(zoneFile, QStringLiteral("Monsters"));
+        blackTekView.selectCreatureBrush(QStringLiteral("Rat"), false);
+        collectZones();
+        if (!require(worldZones.empty() && !spawnZones.empty() && !selectedZones.empty(),
+                     "Native zone overlay did not select visible geometry")) return 1;
+        blackTekView.setShowBlackTekZones(false);
+        collectZones();
+        if (!require(worldZones.empty() && spawnZones.empty() && selectedZones.empty()
+                         && borders.empty() && markers.empty(),
+                     "A selected zone or creature brush overrode the zone visibility toggle")
+            || !expectOutfits(blackTekView, red, red)) return 1;
+        blackTekView.setShowBlackTekZones(true);
+        collectZones();
+        if (!require(!spawnZones.empty() && !selectedZones.empty(),
+                     "Re-enabling BlackTek zones did not restore native geometry")) return 1;
+        blackTekView.selectCreatureBrush({}, false);
+        blackTekView.setShowCreatures(false);
+        if (!expectOutfits(blackTekView, {}, {})) return 1;
+        blackTekView.setShowCreatures(true);
+        if (!require(creatures.saveCreature(QStringLiteral("Rat"), QStringLiteral("Rat"),
+                                            false, 2, 0, 0, 0, 0, 0),
+                     "Could not update the BlackTek monster outfit")
+            || !expectOutfits(blackTekView, green, red)) return 1;
+        constexpr quint64 adjacentChunk = quint64(1) << 32;
+        if (!require(waitUntil([&] {
+                if (blackTekView.renderChunkVersion(7, adjacentChunk) == MapView::kChunkPending)
+                    blackTekView.renderRequestChunk(7, adjacentChunk);
+                return blackTekView.renderChunkVersion(7, adjacentChunk) != MapView::kChunkPending;
+            }), "Could not build the unaffected chunk")) return 1;
+        const auto adjacentVersion = blackTekView.renderChunkVersion(7, adjacentChunk);
+        if (!require(adjacentVersion != MapView::kChunkEmpty,
+                     "The unaffected chunk did not contain the test tile")) return 1;
+        const auto cacheReset = blackTekView.renderChunkCacheResetVersion();
+        const auto spawnChunkVersion = blackTekView.renderChunkVersion(7, 0);
+        QByteArray editedMonsters = monsterZone;
+        editedMonsters.replace("position = \"0:0:0\" }", "position = \"0:0:0\", interval = 90 }");
+        if (!require(blackTekMap.editBlackTekZoneFile(zoneFile, QString::fromUtf8(editedMonsters + npcZone + distantZone)).isEmpty()
+                         && blackTekView.renderChunkVersion(7, 0) == spawnChunkVersion
+                         && blackTekView.renderChunkCacheResetVersion() == cacheReset,
+                     "A respawn interval edit invalidated unchanged sprites")) return 1;
+        if (!require(blackTekMap.editBlackTekZoneFile(zoneFile, QString::fromUtf8(npcZone)).isEmpty()
+                         && blackTekMap.tileAt(1, 1, 7)->creature_name.isEmpty()
+                         && blackTekMap.tileAt(2, 1, 7)->creature_name.isEmpty(),
+                     "Zone editing must preserve authored map tiles")
+            || !expectOutfits(blackTekView, {}, red)) return 1;
+        if (!require(blackTekView.renderChunkVersion(7, adjacentChunk) == adjacentVersion
+                         && blackTekView.renderChunkCacheResetVersion() == cacheReset,
+                     "A zone edit invalidated an unrelated map chunk")) return 1;
+        if (!require(creatures.saveCreature(QStringLiteral("Rat"), QStringLiteral("Rat"),
+                                            false, 1, 0, 0, 0, 0, 0),
+                     "Could not restore the original test outfit")) return 1;
+    }
     OtbmReader map;
     if (!require(map.newMap(64, 64, 860, 2, 22)
                      && map.placeItem(1, 1, 7, 1000, 0, false, true)

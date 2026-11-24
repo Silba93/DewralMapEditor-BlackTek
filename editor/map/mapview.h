@@ -318,7 +318,8 @@ public:
     void setShowBlackTekZones(bool on) {
         if (m_showBlackTekZones == on) return;
         m_showBlackTekZones = on;
-        emit viewFlagsChanged();
+        ++m_metadataOverlayVersion;
+        emit viewFlagsChanged(); emit contentUpdated(); update();
     }
     bool showSpawns() const { return m_showSpawns; }
     void setShowSpawns(bool on) {
@@ -551,6 +552,7 @@ public:
 
     quint64 renderContentVersion() const;
     quint64 renderMetadataOverlayVersion() const;
+    quint64 renderBlackTekPaintVersion() const { return m_blackTekPaintVersion; }
     quint64 renderPointerOverlayVersion() const;
 
     static constexpr quint32 kChunkEmpty   = 0;
@@ -603,6 +605,14 @@ public:
                                     std::vector<float> &outNoPvp,
                                     std::vector<float> &outNoLogout,
                                     std::vector<float> &outPvp, std::array<std::vector<float>, 6> &outBorders);
+    void renderCollectBlackTekZoneInstances(std::vector<float> &outWorld,
+                                            std::vector<float> &outSpawn,
+                                            std::vector<float> &outSelected,
+                                            std::vector<float> &outBorders,
+                                            std::vector<float> &outMarkers,
+                                            std::vector<float> &outPaintPreview) const;
+    void renderCollectBlackTekPaintPreview(std::vector<float> &out) const;
+    Q_INVOKABLE void setBlackTekZonePreview(const QString &sourceFile, const QString &name);
 
     bool renderRubberBandRect(double &x0, double &y0, double &x1, double &y1) const {
         if (!m_selectionController.selecting()) return false;
@@ -922,6 +932,9 @@ private:
     using QuadRef = MapQuadRef;
 
     void buildStaticIndex();
+    QVector<QPair<int, quint64>> indexBlackTekSpawns();
+    void indexBlackTekZoneGeometry();
+    const CreatureStore::CreatureType *blackTekCreatureAt(int x, int y, int z) const;
     struct QuerySnapshot;
     std::shared_ptr<const QuerySnapshot> captureQuerySnapshot(bool selectionOnly) const;
     QVariantMap queryItems(const QuerySnapshot *snapshot, const QString &type,
@@ -939,7 +952,11 @@ private:
 
     // The optional flag tracks chunks that require animation invalidation.
     void appendItemQuads(const OtbmTile *tile, std::vector<QuadRef> &out,
-                         bool *animated = nullptr) const;
+                         bool *animated = nullptr,
+                         const CreatureStore::CreatureType *blackTekCreature = nullptr) const;
+    void appendCreatureQuads(const CreatureStore::CreatureType *creature,
+                             int x, int y, int direction, int elevation,
+                             std::vector<QuadRef> &out) const;
 
     void appendTopItemQuads(const OtbmTile *tile, std::vector<QuadRef> &out) const;
     QString prepareLuaPatch(const QVariantMap &patch,int x,int y,int z,
@@ -1174,6 +1191,28 @@ private:
     static constexpr int kPlaceEffectId = 3;
     struct ActiveEffect { int x, y, z; qint64 startMs; };
     std::vector<ActiveEffect> m_activeEffects;
+    struct BlackTekRenderSpawn {
+        int x = 0;
+        int y = 0;
+        int z = 0;
+        bool hasCreature = false;
+        CreatureStore::CreatureType creature;
+    };
+    QHash<int, QHash<quint64, QVector<BlackTekRenderSpawn>>> m_blackTekSpawnChunks;
+    QHash<int, QSet<quint64>> m_blackTekSpawnOnlyChunks;
+    struct BlackTekZoneTileRef {
+        int zoneIndex = -1;
+        int x = 0;
+        int y = 0;
+        bool marker = false;
+        bool relative = false;
+        quint8 edges = 0;
+    };
+    QVector<BlackTekZone> m_blackTekOverlayZones;
+    QHash<int, QHash<quint64, QVector<BlackTekZoneTileRef>>> m_blackTekZoneTilesByChunk;
+    QString m_blackTekZonePreviewSource;
+    QString m_blackTekZonePreviewName;
+    MapFloorBoundsIndex m_mapTileBounds;
     bool m_placeEffect = true;
     QElapsedTimer m_effectClock;
 
@@ -1190,6 +1229,7 @@ private:
     QVariantMap m_blackTekZonePaintOptions;
     bool m_blackTekZonePaintNew = false;
     QSet<quint64> m_blackTekZoneStrokePositions;
+    quint64 m_blackTekPaintVersion = 0;
     bool m_spacePanHeld = false;
     int m_dragStartX = 0, m_dragStartY = 0;
     bool brushCanDrag() const;

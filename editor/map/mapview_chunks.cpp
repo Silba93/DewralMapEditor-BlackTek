@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <set>
 #include <vector>
 
 void MapView::buildStaticIndex()
@@ -23,10 +24,16 @@ void MapView::buildStaticIndex()
     auto &tileIndex = m_chunkStore.tiles();
     tileIndex.clear();
     m_chunkStore.bounds() = {};
+    m_mapTileBounds = {};
     m_chunkStore.dirtyBounds().clear();
+    m_blackTekSpawnChunks.clear();
+    m_blackTekSpawnOnlyChunks.clear();
     MapSpawnIndexService::FloorCenters spawnCenters;
     m_chunkStore.indexedTileCount() = 0;
-    if (!m_otbm || !m_otbm->isLoaded()) return;
+    if (!m_otbm || !m_otbm->isLoaded()) {
+        indexBlackTekZoneGeometry();
+        return;
+    }
 
     for (const OtbmTile &tile : m_otbm->tiles()) {
         m_chunkStore.bounds()[tile.z].include(tile.x, tile.y);
@@ -49,6 +56,248 @@ void MapView::buildStaticIndex()
     }
     m_spawnIndex.setPrebuilt(std::move(spawnCenters));
     m_chunkStore.indexedTileCount() = static_cast<qsizetype>(m_otbm->tiles().size());
+    m_mapTileBounds = m_chunkStore.bounds();
+    indexBlackTekSpawns();
+}
+
+QVector<QPair<int, quint64>> MapView::indexBlackTekSpawns()
+{
+    auto &tileIndex = m_chunkStore.tiles();
+    for (auto floor = m_blackTekSpawnOnlyChunks.cbegin();
+         floor != m_blackTekSpawnOnlyChunks.cend(); ++floor) {
+        auto floorTiles = tileIndex.find(floor.key());
+        if (floorTiles == tileIndex.end())
+            continue;
+        for (quint64 key : floor.value()) {
+            const auto chunk = floorTiles->find(key);
+            if (chunk != floorTiles->end() && chunk->empty())
+                floorTiles->erase(chunk);
+        }
+    }
+    m_blackTekSpawnOnlyChunks.clear();
+    auto previousSpawns = std::move(m_blackTekSpawnChunks);
+    m_blackTekSpawnChunks.clear();
+    QHash<QString, CreatureStore::CreatureType> catalog;
+    if (m_creatureStore && m_otbm && m_otbm->isLoaded()
+        && m_otbm->blackTekSpawnMode()) {
+        catalog.reserve(m_creatureStore->count());
+        for (const auto &creature : m_creatureStore->creatureTypes()) {
+            const QString key = (creature.isNpc ? QStringLiteral("npc:")
+                                                 : QStringLiteral("monster:"))
+                              + creature.name.toCaseFolded();
+            if (!catalog.contains(key))
+                catalog.insert(key, creature);
+        }
+    }
+    if (m_otbm && m_otbm->isLoaded() && m_otbm->blackTekSpawnMode()) {
+        for (const auto &spawn : m_otbm->blackTekCreatureSpawns()) {
+            const quint64 key = chunkKey(floorDiv(spawn.x, kChunkTiles),
+                                         floorDiv(spawn.y, kChunkTiles));
+            auto &floor = tileIndex[spawn.z];
+            if (!floor.contains(key)) {
+                floor.insert(key, {});
+                m_blackTekSpawnOnlyChunks[spawn.z].insert(key);
+            }
+
+            BlackTekRenderSpawn indexed;
+            indexed.x = spawn.x;
+            indexed.y = spawn.y;
+            indexed.z = spawn.z;
+            for (const QString &name : spawn.names) {
+                const QString catalogKey = (spawn.isNpc ? QStringLiteral("npc:")
+                                                         : QStringLiteral("monster:"))
+                                         + name.toCaseFolded();
+                const auto creature = catalog.constFind(catalogKey);
+                if (creature == catalog.cend())
+                    continue;
+                indexed.creature = creature.value();
+                indexed.hasCreature = true;
+                break;
+            }
+            m_blackTekSpawnChunks[spawn.z][key].append(std::move(indexed));
+        }
+    }
+    for (auto floor = m_blackTekSpawnChunks.begin();
+         floor != m_blackTekSpawnChunks.end(); ++floor) {
+        for (auto chunk = floor->begin(); chunk != floor->end(); ++chunk) {
+            std::sort(chunk->begin(), chunk->end(),
+                      [](const auto &left, const auto &right) {
+                          return left.y != right.y ? left.y < right.y
+                                                   : left.x < right.x;
+                      });
+        }
+    }
+
+    m_chunkStore.bounds() = m_mapTileBounds;
+    for (auto floor = m_blackTekSpawnChunks.cbegin(); floor != m_blackTekSpawnChunks.cend(); ++floor)
+        for (auto chunk = floor->cbegin(); chunk != floor->cend(); ++chunk)
+            for (const auto &spawn : chunk.value())
+                m_chunkStore.bounds()[spawn.z].include(spawn.x, spawn.y);
+
+    const auto sameSpawn = [](const BlackTekRenderSpawn &left,
+                              const BlackTekRenderSpawn &right) {
+        if (left.x != right.x || left.y != right.y || left.z != right.z
+            || left.hasCreature != right.hasCreature)
+            return false;
+        if (!left.hasCreature)
+            return true;
+        return left.creature.lookType == right.creature.lookType
+            && left.creature.lookItem == right.creature.lookItem
+            && left.creature.lookHead == right.creature.lookHead
+            && left.creature.lookBody == right.creature.lookBody
+            && left.creature.lookLegs == right.creature.lookLegs
+            && left.creature.lookFeet == right.creature.lookFeet;
+    };
+    const auto sameChunk = [&sameSpawn](const QVector<BlackTekRenderSpawn> *left,
+                                        const QVector<BlackTekRenderSpawn> *right) {
+        if (!left || !right)
+            return (!left || left->isEmpty()) && (!right || right->isEmpty());
+        if (left->size() != right->size())
+            return false;
+        for (qsizetype i = 0; i < left->size(); ++i)
+            if (!sameSpawn(left->at(i), right->at(i)))
+                return false;
+        return true;
+    };
+    std::set<std::pair<int, quint64>> affected;
+    for (auto floor = previousSpawns.cbegin(); floor != previousSpawns.cend(); ++floor) {
+        for (auto chunk = floor->cbegin(); chunk != floor->cend(); ++chunk) {
+            const auto nextFloor = m_blackTekSpawnChunks.constFind(floor.key());
+            const auto nextChunk = nextFloor != m_blackTekSpawnChunks.cend()
+                ? nextFloor->constFind(chunk.key())
+                : QHash<quint64, QVector<BlackTekRenderSpawn>>::const_iterator();
+            const auto *next = nextFloor != m_blackTekSpawnChunks.cend()
+                    && nextChunk != nextFloor->cend() ? &nextChunk.value() : nullptr;
+            if (!sameChunk(&chunk.value(), next))
+                affected.insert({floor.key(), chunk.key()});
+        }
+    }
+    for (auto floor = m_blackTekSpawnChunks.cbegin(); floor != m_blackTekSpawnChunks.cend(); ++floor) {
+        for (auto chunk = floor->cbegin(); chunk != floor->cend(); ++chunk) {
+            const auto oldFloor = previousSpawns.constFind(floor.key());
+            const auto oldChunk = oldFloor != previousSpawns.cend()
+                ? oldFloor->constFind(chunk.key())
+                : QHash<quint64, QVector<BlackTekRenderSpawn>>::const_iterator();
+            const auto *old = oldFloor != previousSpawns.cend()
+                    && oldChunk != oldFloor->cend() ? &oldChunk.value() : nullptr;
+            if (!sameChunk(old, &chunk.value()))
+                affected.insert({floor.key(), chunk.key()});
+        }
+    }
+
+    QVector<QPair<int, quint64>> result;
+    result.reserve(static_cast<qsizetype>(affected.size()));
+    for (const auto &[floor, key] : affected)
+        result.append(qMakePair(floor, key));
+    indexBlackTekZoneGeometry();
+    return result;
+}
+
+void MapView::indexBlackTekZoneGeometry()
+{
+    m_blackTekOverlayZones = m_otbm && m_otbm->blackTekSpawnMode()
+        ? m_otbm->blackTekZones() : QVector<BlackTekZone>();
+    m_blackTekZoneTilesByChunk.clear();
+    for (int zoneIndex = 0; zoneIndex < m_blackTekOverlayZones.size(); ++zoneIndex) {
+        const BlackTekZone &zone = m_blackTekOverlayZones.at(zoneIndex);
+        QHash<int, QSet<quint64>> zoneTiles;
+        for (const auto &position : zone.worldPositions)
+            zoneTiles[position.z].insert(posKey(position.x, position.y));
+
+        constexpr int dx[] {-1, 1, 0, 0};
+        constexpr int dy[] {0, 0, -1, 1};
+        for (const auto &position : zone.worldPositions) {
+            const auto &floorTiles = zoneTiles[position.z];
+            quint8 edges = 0;
+            for (int side = 0; side < 4; ++side) {
+                if (!floorTiles.contains(posKey(position.x + dx[side], position.y + dy[side])))
+                    edges |= quint8(1u << side);
+            }
+            const quint64 key = chunkKey(floorDiv(position.x, kChunkTiles),
+                                         floorDiv(position.y, kChunkTiles));
+            m_blackTekZoneTilesByChunk[position.z][key].append(
+                {zoneIndex, position.x, position.y, false, false, edges});
+        }
+        const auto origin = zone.hasRange ? zone.rangeStart
+            : BlackTekZone::Position3D{zone.minX, zone.minY, zone.floor};
+        for (const auto &creature : zone.creatures) {
+            auto position = creature.hasPosition ? creature.position
+                : BlackTekZone::Position3D{};
+            if (zone.playerRelative || !creature.hasPosition) {
+                position.x += origin.x;
+                position.y += origin.y;
+                position.z += origin.z;
+            }
+            const quint64 key = chunkKey(floorDiv(position.x, kChunkTiles),
+                                         floorDiv(position.y, kChunkTiles));
+            m_blackTekZoneTilesByChunk[position.z][key].append(
+                {zoneIndex, position.x, position.y, true, zone.playerRelative});
+        }
+    }
+}
+
+const CreatureStore::CreatureType *MapView::blackTekCreatureAt(int x, int y, int z) const
+{
+    if (!m_showCreatures)
+        return nullptr;
+    const auto floor = m_blackTekSpawnChunks.constFind(z);
+    if (floor == m_blackTekSpawnChunks.cend())
+        return nullptr;
+    const quint64 key = chunkKey(floorDiv(x, kChunkTiles), floorDiv(y, kChunkTiles));
+    const auto chunk = floor->constFind(key);
+    if (chunk == floor->cend())
+        return nullptr;
+    const auto spawn = std::lower_bound(
+        chunk->cbegin(), chunk->cend(), std::pair<int, int>{y, x},
+        [](const BlackTekRenderSpawn &candidate, const std::pair<int, int> &position) {
+            return candidate.y != position.first ? candidate.y < position.first
+                                                 : candidate.x < position.second;
+        });
+    if (spawn == chunk->cend() || spawn->x != x || spawn->y != y || !spawn->hasCreature)
+        return nullptr;
+    return &spawn->creature;
+}
+
+void MapView::appendCreatureQuads(const CreatureStore::CreatureType *creature,
+                                  int x, int y, int direction, int elevation,
+                                  std::vector<QuadRef> &out) const
+{
+    if (!creature || !m_dat)
+        return;
+
+    const bool isOutfit = creature->lookType > 0;
+    const ClientItem *definition = isOutfit
+        ? m_dat->outfitByLookType(static_cast<uint16_t>(creature->lookType))
+        : (creature->lookItem > 0 && m_otb
+            ? m_dat->itemByClientId(static_cast<uint16_t>(
+                m_otb->clientIdForServerId(creature->lookItem))) : nullptr);
+    if (!definition || definition->sprite_ids.empty())
+        return;
+
+    const int width = std::max<int>(1, definition->width);
+    const int height = std::max<int>(1, definition->height);
+    const int layers = std::max<int>(1, definition->layers);
+    const int patternX = std::max<int>(1, definition->pattern_x);
+    const int outfitDirection = isOutfit ? ((direction % patternX) + patternX) % patternX : 0;
+    const int renderedLayers = isOutfit ? 1 : layers;
+    for (int layer = 0; layer < renderedLayers; ++layer) {
+        for (int row = 0; row < height; ++row) {
+            for (int column = 0; column < width; ++column) {
+                const int index = ((outfitDirection * layers + layer) * height + row)
+                                * width + column;
+                if (index < 0 || index >= static_cast<int>(definition->sprite_ids.size()))
+                    continue;
+                const uint32_t spriteId = definition->sprite_ids[static_cast<size_t>(index)];
+                const int atlasSlot = atlasSlotForSprite(spriteId);
+                if (spriteId == 0 || atlasSlot < 0)
+                    continue;
+                out.push_back(QuadRef{
+                    (x - column) * kSprite - elevation,
+                    (y - row) * kSprite - elevation,
+                    atlasSlot, false, x, y, true, 0, -2 });
+            }
+        }
+    }
 }
 
 void MapView::updateCurrentFloor()
@@ -70,6 +319,13 @@ void MapView::updateCurrentFloor()
                 }
             }
         }
+        m_mapTileBounds[floor] = bounds;
+        const auto spawnFloor = m_blackTekSpawnChunks.constFind(floor);
+        if (spawnFloor != m_blackTekSpawnChunks.cend()) {
+            for (auto chunk = spawnFloor->cbegin(); chunk != spawnFloor->cend(); ++chunk)
+                for (const auto &spawn : chunk.value())
+                    bounds.include(spawn.x, spawn.y);
+        }
     }
     m_minTileX = bounds.minX; m_minTileY = bounds.minY;
     m_maxTileX = bounds.maxX; m_maxTileY = bounds.maxY;
@@ -88,7 +344,8 @@ void MapView::rebuildFloorIndex()
 }
 
 void MapView::appendItemQuads(const OtbmTile *tile, std::vector<QuadRef> &out,
-                              bool *animated) const
+                              bool *animated,
+                              const CreatureStore::CreatureType *blackTekCreature) const
 {
     // Metadata overlays may be edited before the client assets are available.
     if (!tile || !m_otb || !m_dat) return;
@@ -117,7 +374,8 @@ void MapView::appendItemQuads(const OtbmTile *tile, std::vector<QuadRef> &out,
         const bool isGround = item.is_ground
                            || m_otb->isClientGroundForServerId(item.server_id);
 
-        const bool isTop = (idx == topIdx) && tile->creature_name.isEmpty();
+        const bool isTop = (idx == topIdx) && tile->creature_name.isEmpty()
+                           && !blackTekCreature;
 
         const int ox = ci->has(ClientProperty::Offset) ? ci->offset_x : 0;
         const int oy = ci->has(ClientProperty::Offset) ? ci->offset_y : 0;
@@ -149,37 +407,12 @@ void MapView::appendItemQuads(const OtbmTile *tile, std::vector<QuadRef> &out,
         if (ci->has(ClientProperty::Elevation)) elevation += ci->elevation;
     }
 
-    if (m_showCreatures && !tile->creature_name.isEmpty() && m_creatureStore && m_dat) {
-        const CreatureStore::CreatureType *ct = m_creatureStore->byName(tile->creature_name);
-        const bool isOutfit = ct && ct->lookType > 0;
-        const ClientItem *of = isOutfit
-            ? m_dat->outfitByLookType(static_cast<uint16_t>(ct->lookType))
-            : (ct && ct->lookItem > 0 && m_otb
-                ? m_dat->itemByClientId(static_cast<uint16_t>(
-                    m_otb->clientIdForServerId(ct->lookItem))) : nullptr);
-        if (of && !of->sprite_ids.empty()) {
-            const int w = std::max<int>(1, of->width);
-            const int h = std::max<int>(1, of->height);
-            const int patX = std::max<int>(1, of->pattern_x);
-            const int layers = std::max<int>(1, of->layers);
-            const int direction = isOutfit ? tile->creature_direction % patX : 0;
-            const int renderedLayers = isOutfit ? 1 : layers;
-            for (int layer = 0; layer < renderedLayers; ++layer)
-                for (int hh = 0; hh < h; ++hh)
-                    for (int ww = 0; ww < w; ++ww) {
-                        const int idx = ((direction * layers + layer) * h + hh) * w + ww;
-                        if (idx < 0 || idx >= static_cast<int>(of->sprite_ids.size())) continue;
-                        const uint32_t sid = of->sprite_ids[static_cast<size_t>(idx)];
-                        if (sid == 0) continue;
-                        const int as = atlasSlotForSprite(sid);
-                        if (as < 0) continue;
-                        out.push_back(QuadRef{
-                            (tile->x - ww) * kSprite - elevation,
-                            (tile->y - hh) * kSprite - elevation,
-                            as, false, tile->x, tile->y, /*topItem=*/true, 0, -2 });
-                    }
-        }
-    }
+    if (m_showCreatures && !tile->creature_name.isEmpty() && m_creatureStore)
+        appendCreatureQuads(m_creatureStore->byName(tile->creature_name),
+                            tile->x, tile->y, tile->creature_direction,
+                            elevation, out);
+    else if (m_showCreatures && blackTekCreature)
+        appendCreatureQuads(blackTekCreature, tile->x, tile->y, 0, elevation, out);
 }
 
 void MapView::appendTopItemQuads(const OtbmTile *tile, std::vector<QuadRef> &out) const
@@ -230,14 +463,55 @@ void MapView::appendTopItemQuads(const OtbmTile *tile, std::vector<QuadRef> &out
 void MapView::collectFloorChunkQuads(int z, quint64 key, std::vector<QuadRef> &out,
                                      bool *animated)
 {
-    auto &tileIndex = m_chunkStore.tiles();
-    auto zit = tileIndex.find(z);
-    if (zit == tileIndex.end()) return;
-    auto cit = zit->find(key);
-    if (cit == zit->end()) return;
+    const auto &tileIndex = m_chunkStore.tiles();
+    const auto zit = tileIndex.constFind(z);
+    const auto floorSpawns = m_blackTekSpawnChunks.constFind(z);
+    const auto cit = zit != tileIndex.cend() ? zit->constFind(key)
+        : QHash<quint64, std::vector<const OtbmTile *>>::const_iterator();
+    const auto spawnIt = floorSpawns != m_blackTekSpawnChunks.cend()
+        ? floorSpawns->constFind(key)
+        : QHash<quint64, QVector<BlackTekRenderSpawn>>::const_iterator();
+    const std::vector<const OtbmTile *> *tiles =
+        zit != tileIndex.cend() && cit != zit->cend() ? &cit.value() : nullptr;
+    const QVector<BlackTekRenderSpawn> *spawns =
+        floorSpawns != m_blackTekSpawnChunks.cend() && spawnIt != floorSpawns->cend()
+            ? &spawnIt.value() : nullptr;
+    if (!m_showCreatures || !spawns || spawns->isEmpty()) {
+        if (tiles)
+            for (const OtbmTile *tile : *tiles)
+                appendItemQuads(tile, out, animated);
+        return;
+    }
 
-    for (const OtbmTile *tile : cit.value())
-        appendItemQuads(tile, out, animated);
+    const auto appendSpawn = [this, &out](const BlackTekRenderSpawn &spawn) {
+        appendCreatureQuads(spawn.hasCreature ? &spawn.creature : nullptr,
+                            spawn.x, spawn.y, 0, 0, out);
+    };
+
+    size_t tilePosition = 0;
+    qsizetype spawnPosition = 0;
+    while ((tiles && tilePosition < tiles->size()) || spawnPosition < spawns->size()) {
+        const OtbmTile *tile = tiles && tilePosition < tiles->size()
+            ? tiles->at(tilePosition) : nullptr;
+        const auto *spawn = spawnPosition < spawns->size()
+            ? &spawns->at(spawnPosition) : nullptr;
+        const bool spawnFirst = spawn && (!tile || spawn->y < tile->y
+            || (spawn->y == tile->y && spawn->x < tile->x));
+        if (spawnFirst) {
+            appendSpawn(*spawn);
+            ++spawnPosition;
+        } else if (tile) {
+            const auto *creature = m_showCreatures && spawn
+                && spawn->x == tile->x && spawn->y == tile->y
+                && tile->creature_name.isEmpty() && spawn->hasCreature
+                ? &spawn->creature : nullptr;
+            appendItemQuads(tile, out, animated, creature);
+            ++tilePosition;
+            if (spawn && spawn->x == tile->x && spawn->y == tile->y) {
+                ++spawnPosition;
+            }
+        }
+    }
 }
 
 void MapView::startWorker()

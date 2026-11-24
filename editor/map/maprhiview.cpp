@@ -406,6 +406,7 @@ public:
         }
 
         const quint64 metadataOverlayVersion = src->renderMetadataOverlayVersion();
+        const quint64 blackTekPaintVersion = src->renderBlackTekPaintVersion();
         constexpr int overlayCacheTiles = 16;
         const int overlayX = fdiv(static_cast<int>(std::floor(ox)), overlayCacheTiles)
                            * overlayCacheTiles;
@@ -464,6 +465,17 @@ public:
             uploadZone(m_zonePvpVbo, m_zonePvpInst, m_zonePvpCount);
             for (int i = 0; i < 6; ++i) uploadDyn(m_zoneBorderVbo[i], m_zoneBorders[i], m_zoneBorderCount[i]);
 
+            src->renderCollectBlackTekZoneInstances(
+                m_blackTekWorldInst, m_blackTekSpawnInst, m_blackTekSelectedInst,
+                m_blackTekBorderInst, m_blackTekMarkerInst, m_blackTekPaintInst);
+            uploadDyn(m_blackTekWorldVbo, m_blackTekWorldInst, m_blackTekWorldCount);
+            uploadDyn(m_blackTekSpawnVbo, m_blackTekSpawnInst, m_blackTekSpawnCount);
+            uploadDyn(m_blackTekSelectedVbo, m_blackTekSelectedInst, m_blackTekSelectedCount);
+            uploadDyn(m_blackTekBorderVbo, m_blackTekBorderInst, m_blackTekBorderCount);
+            uploadDyn(m_blackTekMarkerVbo, m_blackTekMarkerInst, m_blackTekMarkerCount);
+            uploadDyn(m_blackTekPaintVbo, m_blackTekPaintInst, m_blackTekPaintCount);
+            m_blackTekPaintVersion = blackTekPaintVersion;
+
             src->renderCollectSpawnMarkInstances(m_spawnInst, m_spawnSelInst, &m_spawnFillInst);
             uploadDyn(m_spawnFillVbo, m_spawnFillInst, m_spawnFillCount);
             uploadDyn(m_spawnVbo, m_spawnInst, m_spawnCount);
@@ -493,6 +505,12 @@ public:
             uploadDyn(m_dungeonWallsVbo, m_dungeonWallsInst, m_dungeonWallsCount);
         }
 
+        if (!m_previewWindow && blackTekPaintVersion != m_blackTekPaintVersion) {
+            src->renderCollectBlackTekPaintPreview(m_blackTekPaintInst);
+            uploadDyn(m_blackTekPaintVbo, m_blackTekPaintInst, m_blackTekPaintCount);
+            m_blackTekPaintVersion = blackTekPaintVersion;
+        }
+
         if (overlayViewChanged) {
             m_overlayX = overlayX;
             m_overlayY = overlayY;
@@ -509,6 +527,7 @@ public:
         };
         mixSceneVersion(contentVersion);
         mixSceneVersion(metadataOverlayVersion);
+        mixSceneVersion(blackTekPaintVersion);
         mixSceneVersion(static_cast<quint32>(quadCacheVersion));
         mixSceneVersion(static_cast<quint32>(resetVersion));
         mixSceneVersion(static_cast<quint32>(m_atlasGen));
@@ -645,6 +664,18 @@ public:
                        QVector4D(0.95f, 0.43f, 0.25f, 0.24f), matrix);
 
         }
+        rectangles(draws, m_blackTekWorldVbo, m_blackTekWorldCount,
+                   QVector4D(0.341f, 0.8f, 0.91f, 0.22f), matrix);
+        rectangles(draws, m_blackTekSpawnVbo, m_blackTekSpawnCount,
+                   QVector4D(1.0f, 0.596f, 0.208f, 0.32f), matrix);
+        rectangles(draws, m_blackTekSelectedVbo, m_blackTekSelectedCount,
+                   QVector4D(0.341f, 0.8f, 0.91f, 0.2f), matrix);
+        rectangles(draws, m_blackTekBorderVbo, m_blackTekBorderCount,
+                   QVector4D(0.341f, 0.8f, 0.91f, 0.9f), matrix);
+        rectangles(draws, m_blackTekMarkerVbo, m_blackTekMarkerCount,
+                   QVector4D(1.0f, 0.694f, 0.267f, 0.9f), matrix);
+        rectangles(draws, m_blackTekPaintVbo, m_blackTekPaintCount,
+                   QVector4D(1.0f, 0.804f, 0.251f, 0.62f), matrix);
         // Draw numbered zones last so PZ/house fills cannot cover their borders.
         for (int i = 0; i < 8; ++i) {
             const auto color = numberedZoneColors()[i];
@@ -791,6 +822,12 @@ public:
         m_zoneNoPvpVbo.resetGpu();
         m_zoneNoLogoutVbo.resetGpu();
         m_zonePvpVbo.resetGpu();
+        m_blackTekWorldVbo.resetGpu();
+        m_blackTekSpawnVbo.resetGpu();
+        m_blackTekSelectedVbo.resetGpu();
+        m_blackTekBorderVbo.resetGpu();
+        m_blackTekMarkerVbo.resetGpu();
+        m_blackTekPaintVbo.resetGpu();
         for (auto &buffer : m_numberedZoneVbo) buffer.resetGpu();
         for (auto &buffer : m_numberedZoneBorderVbo) buffer.resetGpu();
         for (auto &buffer : m_zoneBorderVbo) buffer.resetGpu();
@@ -934,6 +971,25 @@ public:
     MapRenderBuffer m_zonePvpVbo;
     std::vector<float> m_zonePvpInst;
     int m_zonePvpCount = 0;
+    MapRenderBuffer m_blackTekWorldVbo;
+    std::vector<float> m_blackTekWorldInst;
+    int m_blackTekWorldCount = 0;
+    MapRenderBuffer m_blackTekSpawnVbo;
+    std::vector<float> m_blackTekSpawnInst;
+    int m_blackTekSpawnCount = 0;
+    MapRenderBuffer m_blackTekSelectedVbo;
+    std::vector<float> m_blackTekSelectedInst;
+    int m_blackTekSelectedCount = 0;
+    MapRenderBuffer m_blackTekBorderVbo;
+    std::vector<float> m_blackTekBorderInst;
+    int m_blackTekBorderCount = 0;
+    MapRenderBuffer m_blackTekMarkerVbo;
+    std::vector<float> m_blackTekMarkerInst;
+    int m_blackTekMarkerCount = 0;
+    MapRenderBuffer m_blackTekPaintVbo;
+    std::vector<float> m_blackTekPaintInst;
+    int m_blackTekPaintCount = 0;
+    quint64 m_blackTekPaintVersion = std::numeric_limits<quint64>::max();
 
     FloorLight m_floorLights[16];
     quint32 m_lightVer = 0;

@@ -343,6 +343,7 @@ bool MapView::loadMap(const QString &path, bool blackTek, bool recovery)
                 std::lock_guard<std::recursive_mutex> lock(guard->m_dataMutex);
                 guard->m_chunkStore.tiles() = std::move(result->floorIndex);
                 guard->m_chunkStore.bounds() = result->bounds;
+                guard->m_mapTileBounds = result->bounds;
                 guard->m_chunkStore.dirtyBounds().clear();
                 guard->m_chunkStore.indexedTileCount() =
                     static_cast<qsizetype>(result->reader->tiles().size());
@@ -441,6 +442,9 @@ void MapView::rebuildAtlas()
 void MapView::setOtbm(OtbmReader *reader)
 {
     if (m_otbm == reader) return;
+    m_blackTekZonePreviewSource.clear();
+    m_blackTekZonePreviewName.clear();
+    ++m_metadataOverlayVersion;
     saveViewPosition();
     m_viewPositionReady = false;
     m_itemController.menuPending() = false;
@@ -455,6 +459,26 @@ void MapView::setOtbm(OtbmReader *reader)
     m_optionalBorderTiles.clear();
     m_optionalBorderOverrides.clear();
     if (m_otbm) connect(m_otbm, &OtbmReader::loadedChanged, this, &MapView::onMapLoaded);
+    if (m_otbm) connect(m_otbm, &OtbmReader::blackTekZonesChanged, this, [this] {
+        if (!m_otbm || !m_otbm->isLoaded() || m_otbm->isLoading()
+            || m_asyncFloorIndexReady)
+            return;
+        QVector<QPair<int, quint64>> changedChunks;
+        {
+            std::lock_guard<std::recursive_mutex> lock(m_dataMutex);
+            changedChunks = indexBlackTekSpawns();
+            for (const auto &chunk : changedChunks)
+                invalidateChunkQuads(chunk.first, chunk.second);
+        }
+        if (!changedChunks.isEmpty()) {
+            updateCurrentFloor();
+            m_chunkStore.cacheVersion().fetch_add(1, std::memory_order_relaxed);
+            ++m_dataVersion;
+        }
+        ++m_metadataOverlayVersion;
+        emit contentUpdated();
+        update();
+    });
     if (m_otbm) connect(m_otbm, &OtbmReader::mapChanged, this, &MapView::invalidateGeneration);
     if (m_otbm) connect(m_otbm, &OtbmReader::mapChanged, this,
         [this, enabled = m_otbm->numberedZonesEnabled()]() mutable {
@@ -531,6 +555,7 @@ void MapView::setCreatureStore(CreatureStore *store)
 void MapView::refreshCreatures()
 {
     std::lock_guard<std::recursive_mutex> lock(m_dataMutex);
+    indexBlackTekSpawns();
     clearChunkQuadCache();
     ++m_dataVersion;
     if (m_creatureStore && m_otbm && m_otbm->isLoaded() && !m_otbm->isLoading()
@@ -848,6 +873,7 @@ void MapView::stopBlackTekZonePainting()
     m_blackTekZonePaintOptions.clear();
     m_blackTekZonePaintNew = false;
     m_blackTekZoneStrokePositions.clear();
+    ++m_blackTekPaintVersion;
     emit blackTekZonePaintPreviewChanged();
     setCursor(m_brushController.serverId() > 0 ? Qt::CrossCursor : Qt::ArrowCursor);
     emit blackTekZonePaintChanged();
@@ -1007,6 +1033,10 @@ void MapView::onMapLoaded()
         m_otbm->reportLoadingProgress(72, QStringLiteral("Indexing visible floors..."));
     if (m_asyncFloorIndexReady) {
         m_asyncFloorIndexReady = false;
+        {
+            std::lock_guard<std::recursive_mutex> lock(m_dataMutex);
+            indexBlackTekSpawns();
+        }
         updateCurrentFloor();
         clearChunkQuadCache();
         ++m_dataVersion;

@@ -82,6 +82,7 @@ void MapView::commitBlackTekZoneStroke()
     for (quint64 key : m_blackTekZoneStrokePositions)
         positions.append(QVariantMap{{"x", selX(key)}, {"y", selY(key)}, {"z", selZ(key)}});
     m_blackTekZoneStrokePositions.clear();
+    ++m_blackTekPaintVersion;
     emit blackTekZonePaintPreviewChanged();
     QString error;
     {
@@ -793,5 +794,8 @@ void MapView::paintAt(int x, int y)
     m_brushController.setLastPosition(x, y);
     endEditBatch();
     refreshAfterEdit(static_cast<uint16_t>(m_brushController.serverId()));
-    if (m_blackTekZonePaintActive) emit blackTekZonePaintPreviewChanged();
+    if (m_blackTekZonePaintActive) {
+        ++m_blackTekPaintVersion;
+        emit blackTekZonePaintPreviewChanged();
+    }
 }

@@ -10,9 +10,7 @@ import "../dialogs"
 Item {
     id: workspace
     function showBlackTekZone(path, name) {
-        mapOverlay.zoneFile = path
-        mapOverlay.zoneName = name
-        mapOverlay.updateBlackTekZone()
+        mapView.setBlackTekZonePreview(path, name)
     }
     readonly property bool tibiaUi: Backend.uiTheme.style === "tibia-ui"
     required property var app
@@ -303,10 +301,10 @@ Item {
             anchors.fill: parent
             visible: true
             mapView: workspace.mapView
+            blackTekReader: Backend.otbmReader
         }
 
         MapOverlay {
-            id: mapOverlay
             anchors.fill: parent
             z: 5
             mapCtrl: mapView

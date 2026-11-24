@@ -847,6 +847,173 @@ QVariantList MapView::visibleZoneLabels() const
     return labels;
 }
 
+void MapView::setBlackTekZonePreview(const QString &sourceFile, const QString &name)
+{
+    if (m_blackTekZonePreviewSource == sourceFile && m_blackTekZonePreviewName == name)
+        return;
+    m_blackTekZonePreviewSource = sourceFile;
+    m_blackTekZonePreviewName = name;
+    ++m_metadataOverlayVersion;
+    emit contentUpdated();
+    update();
+}
+
+void MapView::renderCollectBlackTekZoneInstances(
+    std::vector<float> &outWorld, std::vector<float> &outSpawn,
+    std::vector<float> &outSelected, std::vector<float> &outBorders,
+    std::vector<float> &outMarkers, std::vector<float> &outPaintPreview) const
+{
+    outWorld.clear();
+    outSpawn.clear();
+    outSelected.clear();
+    outBorders.clear();
+    outMarkers.clear();
+    outPaintPreview.clear();
+    if (!m_otbm || !m_otbm->blackTekSpawnMode()) return;
+
+    const int floor = m_navigationController.floor();
+    const double tileSize = std::max(1, m_navigationController.tileSize());
+    constexpr int cacheMarginTiles = 16;
+    const int left = static_cast<int>(std::floor(m_navigationController.originX()))
+                   - cacheMarginTiles;
+    const int top = static_cast<int>(std::floor(m_navigationController.originY()))
+                  - cacheMarginTiles;
+    const int right = static_cast<int>(std::ceil(m_navigationController.originX()
+                        + width() / tileSize)) + cacheMarginTiles;
+    const int bottom = static_cast<int>(std::ceil(m_navigationController.originY()
+                         + height() / tileSize)) + cacheMarginTiles;
+    const auto appendRect = [](std::vector<float> &out, double x, double y,
+                               double w, double h) {
+        if (w <= 0 || h <= 0) return;
+        out.insert(out.end(), {static_cast<float>(x * kSprite),
+                               static_cast<float>(y * kSprite),
+                               static_cast<float>(w * kSprite),
+                               static_cast<float>(h * kSprite)});
+    };
+    const auto appendRange = [&](std::vector<float> &out, const BlackTekZone &zone) {
+    if (!zone.hasRange || !zone.worldPositions.isEmpty()
+            || floor < std::min(zone.rangeStart.z, zone.rangeEnd.z)
+            || floor > std::max(zone.rangeStart.z, zone.rangeEnd.z)) return;
+        const int minX = std::min(zone.rangeStart.x, zone.rangeEnd.x);
+        const int minY = std::min(zone.rangeStart.y, zone.rangeEnd.y);
+        const int maxX = std::max(zone.rangeStart.x, zone.rangeEnd.x);
+        const int maxY = std::max(zone.rangeStart.y, zone.rangeEnd.y);
+        const int x0 = std::max(left, minX);
+        const int y0 = std::max(top, minY);
+        const int x1 = std::min(right, maxX);
+        const int y1 = std::min(bottom, maxY);
+        if (x1 < x0 || y1 < y0) return;
+        appendRect(out, x0, y0, x1 - x0 + 1, y1 - y0 + 1);
+    };
+
+    const int cx0 = floorDiv(left, kChunkTiles);
+    const int cx1 = floorDiv(right, kChunkTiles);
+    const int cy0 = floorDiv(top, kChunkTiles);
+    const int cy1 = floorDiv(bottom, kChunkTiles);
+    const auto floorTiles = m_blackTekZoneTilesByChunk.constFind(floor);
+    const auto selectedZone = [&]() -> int {
+        for (int i = 0; i < m_blackTekOverlayZones.size(); ++i) {
+            const auto &zone = m_blackTekOverlayZones.at(i);
+            if (zone.sourceFile == m_blackTekZonePreviewSource
+                && zone.name == m_blackTekZonePreviewName) return i;
+        }
+        return -1;
+    }();
+    if (!m_showBlackTekZones)
+        return;
+
+    for (int i = 0; i < m_blackTekOverlayZones.size(); ++i) {
+        const auto &zone = m_blackTekOverlayZones.at(i);
+        appendRange(zone.spawnType.isEmpty() ? outWorld : outSpawn, zone);
+    }
+
+    if (floorTiles != m_blackTekZoneTilesByChunk.cend()) {
+        for (int cy = cy0; cy <= cy1; ++cy) {
+            for (int cx = cx0; cx <= cx1; ++cx) {
+                const auto chunk = floorTiles->constFind(chunkKey(cx, cy));
+                if (chunk == floorTiles->cend()) continue;
+                for (const BlackTekZoneTileRef &tile : chunk.value()) {
+                    if (tile.x < left || tile.x > right || tile.y < top || tile.y > bottom)
+                        continue;
+                    const BlackTekZone &zone = m_blackTekOverlayZones.at(tile.zoneIndex);
+                    const bool selected = tile.zoneIndex == selectedZone;
+                    if (tile.marker) {
+                        if (tile.relative || !m_showCreatures)
+                            appendRect(outMarkers, tile.x + 0.375, tile.y + 0.375,
+                                       0.25, 0.25);
+                        continue;
+                    }
+                    auto &fills = selected ? outSelected
+                                : (zone.spawnType.isEmpty() ? outWorld : outSpawn);
+                    appendRect(fills, tile.x, tile.y, 1, 1);
+                    const double edge = std::min(1.0, (selected ? 2.0 : 1.0) / tileSize);
+                    for (int side = 0; side < 4; ++side) {
+                        if (!(tile.edges & (1u << side)))
+                            continue;
+                        const double x = tile.x + (side == 1 ? 1.0 - edge : 0.0);
+                        const double y = tile.y + (side == 3 ? 1.0 - edge : 0.0);
+                        appendRect(outBorders, x, y, side < 2 ? edge : 1.0,
+                                   side < 2 ? 1.0 : edge);
+                    }
+                }
+            }
+        }
+    }
+
+    for (const BlackTekZone &zone : m_blackTekOverlayZones) {
+        const bool selected = selectedZone >= 0 && &zone == &m_blackTekOverlayZones[selectedZone];
+        if (zone.hasRange && (selected || zone.worldPositions.isEmpty())
+            && floor >= std::min(zone.rangeStart.z, zone.rangeEnd.z)
+            && floor <= std::max(zone.rangeStart.z, zone.rangeEnd.z)) {
+            const int x0 = std::min(zone.rangeStart.x, zone.rangeEnd.x);
+            const int y0 = std::min(zone.rangeStart.y, zone.rangeEnd.y);
+            const int x1 = std::max(zone.rangeStart.x, zone.rangeEnd.x);
+            const int y1 = std::max(zone.rangeStart.y, zone.rangeEnd.y);
+            const double edge = std::min(1.0, (selected ? 2.0 : 1.0) / tileSize);
+            if (y0 >= top && y0 <= bottom)
+                appendRect(outBorders, std::max(left, x0), y0,
+                           std::min(right, x1) - std::max(left, x0) + 1, edge);
+            if (y1 >= top && y1 <= bottom)
+                appendRect(outBorders, std::max(left, x0), y1 + 1 - edge,
+                           std::min(right, x1) - std::max(left, x0) + 1, edge);
+            if (x0 >= left && x0 <= right)
+                appendRect(outBorders, x0, std::max(top, y0), edge,
+                           std::min(bottom, y1) - std::max(top, y0) + 1);
+            if (x1 >= left && x1 <= right)
+                appendRect(outBorders, x1 + 1 - edge, std::max(top, y0), edge,
+                           std::min(bottom, y1) - std::max(top, y0) + 1);
+        }
+    }
+
+    Q_UNUSED(outPaintPreview);
+}
+
+void MapView::renderCollectBlackTekPaintPreview(std::vector<float> &out) const
+{
+    out.clear();
+    if (!m_blackTekZonePaintActive) return;
+    const double tileSize = std::max(1, m_navigationController.tileSize());
+    constexpr int cacheMarginTiles = 16;
+    const int left = static_cast<int>(std::floor(m_navigationController.originX()))
+                   - cacheMarginTiles;
+    const int top = static_cast<int>(std::floor(m_navigationController.originY()))
+                  - cacheMarginTiles;
+    const int right = static_cast<int>(std::ceil(m_navigationController.originX()
+                        + width() / tileSize)) + cacheMarginTiles;
+    const int bottom = static_cast<int>(std::ceil(m_navigationController.originY()
+                         + height() / tileSize)) + cacheMarginTiles;
+    for (quint64 position : m_blackTekZoneStrokePositions) {
+        if (selZ(position) != m_navigationController.floor()) continue;
+        const int x = selX(position);
+        const int y = selY(position);
+        if (x >= left && x <= right && y >= top && y <= bottom)
+            out.insert(out.end(), {static_cast<float>(x * kSprite),
+                                   static_cast<float>(y * kSprite),
+                                   static_cast<float>(kSprite),
+                                   static_cast<float>(kSprite)});
+    }
+}
+
 void MapView::renderCollectZoneMarkInstances(std::vector<float> &outHouse,
                                          std::vector<float> &outSelectedHouse,
                                          std::vector<float> &outPz,

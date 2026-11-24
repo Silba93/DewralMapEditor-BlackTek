@@ -48,8 +48,8 @@ int main(int argc, char **argv)
         "range = { start = \"100:100:7\", end = \"110:110:7\" }\n"
         "spawn_type = \"monster\"\npolicy = \"fixed\"\n"
         "monsters = [{ name = \"Wolf\", position = \"1:2:0\" }]\n"
-        "[Relative]\npositions = [\"105:105:7\"]\nspawn_type = \"monster\"\n"
-        "policy = \"relative\"\nmonsters = [{ name = \"Wolf\", position = \"1:2:0\" }]\n";
+        "[Relative]\npositions = [\"105:105:7\"]\nspawn_type = \"npc\"\n"
+        "policy = \"relative\"\nnpcs = [{ name = \"Guide\", position = \"1:2:0\" }]\n";
     const auto invalidRules = BlackTekZones::parse("invalid.toml",
         "[InvalidNpc]\npositions = [\"100:100:7\"]\nnpcs = [{ interval = 5 }]\n"
         "[InvalidMonster]\npositions = [\"100:100:7\"]\n"
@@ -102,6 +102,15 @@ int main(int argc, char **argv)
                "Fixed spawn should use a zone-relative position")) return 1;
     if (!check(map.blackTekZoneGeometry(zonesPath, "Relative").value("spawns").toList().isEmpty(),
                "Player-relative spawns must not show a fixed marker")) return 1;
+    const auto renderSpawns = map.blackTekCreatureSpawns();
+    if (!check(renderSpawns.size() == 1 && renderSpawns.front().x == 101
+               && renderSpawns.front().y == 102 && renderSpawns.front().z == 7
+               && renderSpawns.front().names == QStringList{QStringLiteral("Wolf")}
+               && !renderSpawns.front().isNpc,
+               "Native rendering must use absolute positions for fixed spawns only")) return 1;
+    const auto labels = map.blackTekZoneLabels(7);
+    if (!check(labels.size() == 2 && map.blackTekZoneLabels(6).isEmpty(),
+               "BlackTek labels must follow the current floor")) return 1;
 
     const auto renamed = map.changeBlackTekZoneName(QString::fromUtf8(original), "Forest", "Wooded Area");
     const auto renamedZones = BlackTekZones::parse(zonesPath, renamed.toUtf8());
