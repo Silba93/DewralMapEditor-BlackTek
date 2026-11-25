@@ -302,6 +302,16 @@ Item {
             visible: true
             mapView: workspace.mapView
             blackTekReader: Backend.otbmReader
+            clickBlackTekLabelsToPaint: workspace.settings.clickBlackTekZoneLabelsToPaint !== false
+            onBlackTekPaintRequested: (sourceFile, name) => {
+                if (mapView.blackTekZonePaintActive) {
+                    if (mapView.blackTekZonePaintName === name)
+                        return
+                    mapView.stopBlackTekZonePainting()
+                }
+                if (mapView.startBlackTekZonePainting(sourceFile, name))
+                    workspace.showBlackTekZone(sourceFile, name)
+            }
         }
 
         MapOverlay {
@@ -333,12 +343,12 @@ Item {
                 onTriggered: workspace.blackTekZonesDialog.openForZoneAt(mapArea.ctx.x, mapArea.ctx.y, mapArea.ctx.z)
             }
             Action {
-                text: "Cut"
+                text: mapArea.ctx.targetCreature ? "Cut creature" : "Cut"
                 enabled: mapView.selectionCount > 0
                 onTriggered: mapView.cutSelection()
             }
             Action {
-                text: "Copy"
+                text: mapArea.ctx.targetCreature ? "Copy creature" : "Copy"
                 enabled: mapView.selectionCount > 0
                 onTriggered: mapView.copySelection()
             }
@@ -348,7 +358,7 @@ Item {
                 onTriggered: mapView.startPasting()
             }
             Action {
-                text: "Delete"
+                text: mapArea.ctx.targetCreature ? "Remove creature" : "Delete"
                 enabled: mapView.selectionCount > 0
                 onTriggered: mapView.deleteSelectedTop()
             }
@@ -414,18 +424,18 @@ Item {
             }
             Action {
                 text: "Browse Field"
-                enabled: mapArea.ctx.hasItem
+                enabled: mapArea.ctx.hasItem && !mapArea.ctx.targetCreature
                 onTriggered: workspace.browseFieldDialog.open()
             }
             MenuSeparator {}
             Action {
                 text: "Copy Item Server Id"
-                enabled: mapArea.ctx.hasItem
+                enabled: mapArea.ctx.hasItem && !mapArea.ctx.targetCreature
                 onTriggered: Backend.fileTools.setClipboard("" + mapArea.ctx.serverId)
             }
             Action {
                 text: "Copy Item Client Id"
-                enabled: mapArea.ctx.hasItem
+                enabled: mapArea.ctx.hasItem && !mapArea.ctx.targetCreature
                 onTriggered: Backend.fileTools.setClipboard("" + mapArea.ctx.clientId)
             }
             Action {

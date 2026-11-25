@@ -563,6 +563,40 @@ void MapView::placeSpawnAt(int x, int y)
     }
 }
 
+QString MapView::appendDefaultBlackTekSpawnZone(QString text, int x, int y, int z,
+                                               bool npc, const QString &entry) const
+{
+    if (!m_otbm || m_otbm->blackTekZoneFolder().isEmpty() || entry.isEmpty()
+        || x < 0 || x > 65535 || y < 0 || y > 65535 || z < 0 || z > 15)
+        return {};
+
+    const QString baseName = QStringLiteral("%1 spawn %2-%3-%4")
+        .arg(npc ? QStringLiteral("NPC") : QStringLiteral("Monster"))
+        .arg(x).arg(y).arg(z);
+    QSet<QString> zoneNames;
+    for (const auto &value : m_otbm->blackTekZoneEntries())
+        zoneNames.insert(value.toMap().value(QStringLiteral("name")).toString().toCaseFolded());
+    QString name = baseName;
+    for (int suffix = 2; zoneNames.contains(name.toCaseFolded())
+         || text.contains(QStringLiteral("[\"%1\"]").arg(name), Qt::CaseInsensitive); ++suffix) {
+        name = QStringLiteral("%1 (%2)").arg(baseName).arg(suffix);
+    }
+
+    constexpr int radius = 1;
+    if (!text.isEmpty()) {
+        if (!text.endsWith(QLatin1Char('\n'))) text += QLatin1Char('\n');
+        text += QLatin1Char('\n');
+    }
+    text += QStringLiteral("[\"%1\"]\n"
+        "range = { start = \"%2:%3:%4\", end = \"%5:%6:%4\" }\n"
+        "spawn_type = \"%7\"\npolicy = \"fixed\"\n%8 = [%9]\n")
+        .arg(name).arg(std::max(0, x - radius)).arg(std::max(0, y - radius)).arg(z)
+        .arg(std::min(65535, x + radius)).arg(std::min(65535, y + radius))
+        .arg(npc ? QStringLiteral("npc") : QStringLiteral("monster"),
+             npc ? QStringLiteral("npcs") : QStringLiteral("monsters"), entry);
+    return text;
+}
+
 void MapView::placeCreatureBrushAt(int x, int y)
 {
     if (!m_creatureStore) return;
@@ -578,11 +612,29 @@ void MapView::placeCreatureBrushAt(int x, int y)
     std::lock_guard<std::recursive_mutex> dlk(m_dataMutex);
     if (m_otbm->blackTekSpawnMode()) {
         const int floor = m_navigationController.floor();
+        const auto quote = [](const QString &value) {
+            const QByteArray encoded = QJsonDocument(QJsonArray{value}).toJson(QJsonDocument::Compact);
+            return QString::fromUtf8(encoded.mid(1, encoded.size() - 2));
+        };
         const QVariantMap zone = m_otbm->blackTekSpawnZoneAt(x, y, floor, ct->isNpc);
         if (zone.isEmpty()) {
-            emit operationWarning(ct->isNpc
-                ? QStringLiteral("Place NPCs inside an NPC spawn zone.")
-                : QStringLiteral("Place monsters inside a monster or boss spawn zone."));
+            if (m_otbm->blackTekZoneFolder().isEmpty()) {
+                emit operationWarning(QStringLiteral("Link a BlackTek zones folder before placing creatures."));
+                return;
+            }
+            const QString sourceFile = QDir(m_otbm->blackTekZoneFolder())
+                .filePath(QStringLiteral("zones.toml"));
+            const QString position = QStringLiteral("%1:%2:0").arg(std::min(x, 1)).arg(std::min(y, 1));
+            const QString entry = QStringLiteral("{ name = %1, position = %2, interval = %3 }")
+                .arg(quote(ct->name), quote(position)).arg(m_brushController.creatureSpawntime());
+            const QString updated = appendDefaultBlackTekSpawnZone(
+                m_otbm->blackTekZoneFileText(sourceFile), x, y, floor, ct->isNpc, entry);
+            if (updated.isEmpty()) {
+                emit operationWarning(QStringLiteral("Could not create a spawn zone at this position."));
+                return;
+            }
+            const QString error = m_otbm->editBlackTekZoneFile(sourceFile, updated);
+            if (!error.isEmpty()) emit operationWarning(error);
             return;
         }
 
@@ -623,10 +675,6 @@ void MapView::placeCreatureBrushAt(int x, int y)
         }
         const QString position = QStringLiteral("%1:%2:%3")
             .arg(positionX).arg(positionY).arg(positionZ);
-        const auto quote = [](const QString &value) {
-            const QByteArray encoded = QJsonDocument(QJsonArray{value}).toJson(QJsonDocument::Compact);
-            return QString::fromUtf8(encoded.mid(1, encoded.size() - 2));
-        };
         QString entry = QStringLiteral("{ name = %1, position = %2, interval = %3")
             .arg(quote(ct->name), quote(position))
             .arg(m_brushController.creatureSpawntime());

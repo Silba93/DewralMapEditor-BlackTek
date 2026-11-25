@@ -111,6 +111,26 @@ int main(int argc, char **argv)
     const auto labels = map.blackTekZoneLabels(7);
     if (!check(labels.size() == 2 && map.blackTekZoneLabels(6).isEmpty(),
                "BlackTek labels must follow the current floor")) return 1;
+    const auto firstRule = map.replaceBlackTekZoneField(
+        QString::fromUtf8(original), "Forest", "flags", "[\"nopvp\"]");
+    const auto allRules = map.replaceBlackTekZoneField(
+        firstRule, "Forest", "flags", "[\"nopvp\",\"nologout\",\"no_npcs\"]");
+    if (!check(!firstRule.isEmpty() && !allRules.isEmpty()
+               && map.editBlackTekZoneFile(zonesPath, firstRule).isEmpty()
+               && map.editBlackTekZoneFile(zonesPath, allRules).isEmpty(),
+               "Adding rules must preserve the existing TOML flags array")) return 1;
+    bool showsAllRules = false;
+    for (const auto &value : map.blackTekZoneLabels(7)) {
+        const auto label = value.toMap();
+        if (label.value("name").toString() != QStringLiteral("Forest")) continue;
+        const QString description = label.value("description").toString();
+        showsAllRules = description.contains(QStringLiteral("No PvP"))
+            && description.contains(QStringLiteral("No logout"))
+            && description.contains(QStringLiteral("No NPCs"));
+    }
+    if (!check(showsAllRules && map.undo() && map.undo()
+               && map.blackTekZoneFileText(zonesPath) == QString::fromUtf8(original),
+               "Zone labels must show the original rule and later additions")) return 1;
 
     const auto renamed = map.changeBlackTekZoneName(QString::fromUtf8(original), "Forest", "Wooded Area");
     const auto renamedZones = BlackTekZones::parse(zonesPath, renamed.toUtf8());

@@ -207,9 +207,8 @@ DmeDialog {
         const opposite = flag === "pvp" ? "nopvp" : flag === "nopvp" ? "pvp" : ""
         let flags = current.filter(value => value !== flag && (!checked || value !== opposite))
         if (checked) flags.push(flag)
-        const serialized = flags.map(value => JSON.stringify(value)).join(", ")
-        const updated = reader.replaceBlackTekZoneField(source.text, selectedZone, "flags", serialized,
-            !zoneGeometry.hasFlags)
+        const updated = reader.replaceBlackTekZoneField(
+            source.text, selectedZone, "flags", JSON.stringify(flags), false)
         if (!updated) {
             status = "Could not update this zone's world rules."
             return

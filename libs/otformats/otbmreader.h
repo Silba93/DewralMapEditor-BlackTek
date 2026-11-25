@@ -466,6 +466,7 @@ public:
         bool isNpc;
     };
     QVector<BlackTekCreatureSpawn> blackTekCreatureSpawns() const;
+    QVariantMap blackTekCreatureEntryAt(int x, int y, int z) const;
     const QVector<BlackTekZone> &blackTekZones() const { return m_blackTekZoneData.zones; }
     Q_INVOKABLE QVariantList blackTekZoneLabels(int floor) const;
     Q_INVOKABLE QVariantMap blackTekZoneAt(int x, int y, int floor) const;
@@ -475,6 +476,7 @@ public:
                                                    const QVariantList &positions, bool erase);
     Q_INVOKABLE bool linkBlackTekZones(const QString &folder);
     Q_INVOKABLE QString editBlackTekZoneFile(const QString &path, const QString &text);
+    Q_INVOKABLE QString editBlackTekCreatureEntries(const QVariantList &operations);
     Q_INVOKABLE QString replaceBlackTekZoneField(const QString &text, const QString &zoneName,
                                                 const QString &field, const QString &value, bool insertArrayEntry = false) const;
     Q_INVOKABLE QString changeBlackTekZoneName(const QString &text, const QString &oldName, const QString &newName) const;
@@ -713,6 +715,7 @@ private:
         std::vector<HouseSnapshot> houses;
         QString zonePath;
         QByteArray zoneText;
+        QHash<QString, QByteArray> zoneFiles;
         qsizetype bytes = 0;
     };
     void recordTile(int x, int y, int z);

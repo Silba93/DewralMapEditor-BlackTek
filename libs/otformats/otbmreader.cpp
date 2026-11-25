@@ -3464,7 +3464,7 @@ void OtbmReader::pushUndo(UndoAction &&action)
 {
     m_redoStack.clear();
     m_redoBytes = 0;
-    if (action.tiles.empty() && action.houses.empty() && action.zonePath.isEmpty()) return;
+    if (action.tiles.empty() && action.houses.empty() && action.zonePath.isEmpty() && action.zoneFiles.isEmpty()) return;
     ++m_editOperationCount;
     m_changedTileCount += static_cast<qint64>(action.tiles.size());
     emit activityOperation(QStringLiteral("edit"), static_cast<qint64>(action.tiles.size()));
@@ -3506,6 +3506,8 @@ qsizetype OtbmReader::estimateItemDynamicBytes(const OtbmMapItem &item)
 qsizetype OtbmReader::estimateActionBytes(const UndoAction &action)
 {
     qsizetype bytes = static_cast<qsizetype>(sizeof(UndoAction)) + action.zoneText.size() + action.zonePath.size() * sizeof(QChar);
+    for (auto it = action.zoneFiles.cbegin(); it != action.zoneFiles.cend(); ++it)
+        bytes += it.key().size() * sizeof(QChar) + it.value().size();
     bytes += static_cast<qsizetype>(action.houses.capacity())
              * static_cast<qsizetype>(sizeof(UndoAction::HouseSnapshot));
     bytes += static_cast<qsizetype>(action.tiles.capacity())
@@ -3590,7 +3592,8 @@ void OtbmReader::endUndoGroup()
 {
     m_undoGrouping = false;
     m_groupRecorded.clear();
-    const bool pushed = !m_currentGroup.tiles.empty() || !m_currentGroup.houses.empty();
+    const bool pushed = !m_currentGroup.tiles.empty() || !m_currentGroup.houses.empty()
+        || !m_currentGroup.zoneFiles.isEmpty() || !m_currentGroup.zonePath.isEmpty();
     if (pushed) {
         pushUndo(std::move(m_currentGroup));
     }
@@ -3603,6 +3606,10 @@ void OtbmReader::cancelUndoGroup()
     if(!m_undoGrouping)return;
     m_undoGrouping=false;
     restoreSnapshots(m_currentGroup.tiles);restoreHouseSnapshots(m_currentGroup.houses);
+    for (auto it = m_currentGroup.zoneFiles.cbegin(); it != m_currentGroup.zoneFiles.cend(); ++it)
+        restoreBlackTekZoneText(it.key(), it.value());
+    if (!m_currentGroup.zonePath.isEmpty())
+        restoreBlackTekZoneText(m_currentGroup.zonePath, m_currentGroup.zoneText);
     m_currentGroup=UndoAction{};m_groupRecorded.clear();invalidateZoneIndex();
     emit mapChanged();setDirty(m_groupWasDirty);
 }
@@ -3745,7 +3752,12 @@ bool OtbmReader::undo()
     for (const auto &snap : action.houses)
         if (const OtbmHouse *house = houseById(static_cast<int>(snap.id)))
             redoAction.houses.push_back({snap.id, house->entryX, house->entryY, house->entryZ});
-    if (!action.zonePath.isEmpty()) {
+    if (!action.zoneFiles.isEmpty()) {
+        for (auto it = action.zoneFiles.cbegin(); it != action.zoneFiles.cend(); ++it) {
+            redoAction.zoneFiles.insert(it.key(), m_blackTekZoneEdits.value(it.key(), m_blackTekZoneOriginals.value(it.key())));
+            restoreBlackTekZoneText(it.key(), it.value());
+        }
+    } else if (!action.zonePath.isEmpty()) {
         redoAction.zonePath = action.zonePath;
         redoAction.zoneText = m_blackTekZoneEdits.value(action.zonePath, m_blackTekZoneOriginals.value(action.zonePath));
         restoreBlackTekZoneText(action.zonePath, action.zoneText);
@@ -3783,7 +3795,12 @@ bool OtbmReader::redo()
     for (const auto &snap : action.houses)
         if (const OtbmHouse *house = houseById(static_cast<int>(snap.id)))
             undoAction.houses.push_back({snap.id, house->entryX, house->entryY, house->entryZ});
-    if (!action.zonePath.isEmpty()) {
+    if (!action.zoneFiles.isEmpty()) {
+        for (auto it = action.zoneFiles.cbegin(); it != action.zoneFiles.cend(); ++it) {
+            undoAction.zoneFiles.insert(it.key(), m_blackTekZoneEdits.value(it.key(), m_blackTekZoneOriginals.value(it.key())));
+            restoreBlackTekZoneText(it.key(), it.value());
+        }
+    } else if (!action.zonePath.isEmpty()) {
         undoAction.zonePath = action.zonePath;
         undoAction.zoneText = m_blackTekZoneEdits.value(action.zonePath, m_blackTekZoneOriginals.value(action.zonePath));
         restoreBlackTekZoneText(action.zonePath, action.zoneText);
@@ -4973,10 +4990,18 @@ bool OtbmReader::saveFileInternal(const QString &path, bool recoveryMode)
         if (m_blackTekSpawnMode && (!zoneWrites.empty() || destinationFolder != m_blackTekZoneFolder)) {
             if (destinationFolder != m_blackTekZoneFolder) {
                 const QDir source(m_blackTekZoneFolder), destination(destinationFolder);
-                for (auto *stack : {&m_undoStack, &m_redoStack})
-                    for (auto &action : *stack)
+                for (auto *stack : {&m_undoStack, &m_redoStack}) {
+                    for (auto &action : *stack) {
                         if (!action.zonePath.isEmpty())
                             action.zonePath = destination.filePath(source.relativeFilePath(action.zonePath));
+                        if (!action.zoneFiles.isEmpty()) {
+                            QHash<QString, QByteArray> movedFiles;
+                            for (auto it = action.zoneFiles.cbegin(); it != action.zoneFiles.cend(); ++it)
+                                movedFiles.insert(destination.filePath(source.relativeFilePath(it.key())), it.value());
+                            action.zoneFiles = std::move(movedFiles);
+                        }
+                    }
+                }
             }
             m_blackTekZoneEdits.clear();
             m_rebindingBlackTekZones = true;
@@ -5370,7 +5395,7 @@ bool OtbmReader::linkBlackTekZones(const QString &folder)
         for (auto *history : {&m_undoStack, &m_redoStack}) {
             auto &bytes = history == &m_undoStack ? m_undoBytes : m_redoBytes;
             for (auto it = history->begin(); it != history->end();) {
-                if (it->zonePath.isEmpty()) {
+                if (it->zonePath.isEmpty() && it->zoneFiles.isEmpty()) {
                     ++it;
                 } else {
                     bytes -= it->bytes;
@@ -5456,11 +5481,185 @@ QString OtbmReader::editBlackTekZoneFile(const QString &path, const QString &tex
             if (!zone.name.isEmpty() && other.sourceFile != path && other.name == zone.name)
                 return QStringLiteral("Zone %1 also exists in %2").arg(zone.name, other.sourceFile);
     if (previous == bytes) return {};
-    UndoAction action;
-    action.zonePath = path;
-    action.zoneText = previous;
-    pushUndo(std::move(action));
+    if (m_undoGrouping) {
+        if (!m_currentGroup.zoneFiles.contains(path))
+            m_currentGroup.zoneFiles.insert(path, previous);
+    } else {
+        UndoAction action;
+        action.zonePath = path;
+        action.zoneText = previous;
+        pushUndo(std::move(action));
+    }
     restoreBlackTekZoneText(path, bytes);
+    setDirty(true);
+    emit mapChanged();
+    return {};
+}
+
+QString OtbmReader::editBlackTekCreatureEntries(const QVariantList &operations)
+{
+    if (!m_blackTekSpawnMode) return QStringLiteral("BlackTek monsters are not enabled.");
+    if (operations.isEmpty()) return {};
+
+    struct Operation {
+        QString path, zone, category, action, entry, fileText;
+        int index = -1;
+    };
+    QVector<Operation> parsedOperations;
+    QHash<QString, QString> texts;
+    for (const QVariant &value : operations) {
+        const QVariantMap map = value.toMap();
+        Operation op{map.value(QStringLiteral("sourceFile")).toString(),
+                     map.value(QStringLiteral("zoneName")).toString(),
+                     map.value(QStringLiteral("category")).toString(),
+                     map.value(QStringLiteral("action")).toString(),
+                     map.value(QStringLiteral("entry")).toString(),
+                     map.value(QStringLiteral("text")).toString(),
+                     map.value(QStringLiteral("index"), -1).toInt()};
+        if (op.path.isEmpty() || (op.action != QLatin1String("file") && (op.zone.isEmpty()
+            || (op.category != QLatin1String("monsters") && op.category != QLatin1String("npcs")
+                && op.category != QLatin1String("minions") && op.category != QLatin1String("master"))))
+            || (op.action != QLatin1String("remove") && op.action != QLatin1String("replace")
+                && op.action != QLatin1String("insert") && op.action != QLatin1String("file")))
+            return QStringLiteral("Invalid BlackTek creature edit.");
+        if (op.action != QLatin1String("insert") && op.action != QLatin1String("file") && op.index < 0)
+            return QStringLiteral("Invalid BlackTek creature index.");
+        if (op.action != QLatin1String("remove") && op.action != QLatin1String("file") && op.entry.trimmed().isEmpty())
+            return QStringLiteral("Missing BlackTek creature entry.");
+        if (op.action == QLatin1String("file") && op.fileText.isEmpty())
+            return QStringLiteral("Missing staged BlackTek zone file text.");
+        const QString defaultFile = QDir(m_blackTekZoneFolder).filePath(QStringLiteral("zones.toml"));
+        if (!m_blackTekZoneOriginals.contains(op.path) && !m_blackTekZoneEdits.contains(op.path)
+            && (m_blackTekZoneFolder.isEmpty() || op.path != defaultFile))
+            return QStringLiteral("Select a loaded zone file.");
+        if (!texts.contains(op.path)) texts.insert(op.path, blackTekZoneFileText(op.path));
+        parsedOperations.append(std::move(op));
+    }
+
+    QSet<QString> fullFilePaths;
+    for (const Operation &op : parsedOperations)
+        if (op.action == QLatin1String("file")) fullFilePaths.insert(op.path);
+    for (const Operation &op : parsedOperations)
+        if (op.action != QLatin1String("file") && fullFilePaths.contains(op.path))
+            return QStringLiteral("Use either staged file text or creature entries for each zone file.");
+
+    // Keep original array indices valid: replacements happen first, removals in
+    // descending index order, and appends last.
+    std::stable_sort(parsedOperations.begin(), parsedOperations.end(), [](const Operation &a, const Operation &b) {
+        const int rankA = a.action == QLatin1String("file") ? 0 : a.action == QLatin1String("replace") ? 1 : a.action == QLatin1String("remove") ? 2 : 3;
+        const int rankB = b.action == QLatin1String("file") ? 0 : b.action == QLatin1String("replace") ? 1 : b.action == QLatin1String("remove") ? 2 : 3;
+        if (rankA != rankB) return rankA < rankB;
+        if (a.action == QLatin1String("remove") && a.index != b.index) return a.index > b.index;
+        return a.path == b.path ? a.zone == b.zone ? a.category < b.category : a.zone < b.zone : a.path < b.path;
+    });
+
+    const auto offsets = [](const QString &text, const auto &position) -> qsizetype {
+        const QStringList lines = text.split(QLatin1Char('\n'));
+        if (position.line < 1 || position.line > lines.size()) return -1;
+        qsizetype result = 0;
+        for (unsigned line = 1; line < position.line; ++line)
+            result += lines[qsizetype(line - 1)].size() + 1;
+        const QString &line = lines[qsizetype(position.line - 1)];
+        qsizetype column = 0;
+        for (unsigned i = 1; i < position.column; ++i) {
+            if (column >= line.size()) return -1;
+            column += line[column].isHighSurrogate() && column + 1 < line.size()
+                && line[column + 1].isLowSurrogate() ? 2 : 1;
+        }
+        return result + column;
+    };
+
+    for (const Operation &op : parsedOperations) {
+        QString &text = texts[op.path];
+        if (op.action == QLatin1String("file")) {
+            text = op.fileText;
+            continue;
+        }
+        if (op.action == QLatin1String("insert")) {
+            if (op.category == QLatin1String("master")) {
+                text = replaceBlackTekZoneField(text, op.zone, op.category, op.entry);
+            } else {
+                text = replaceBlackTekZoneField(text, op.zone, op.category, op.entry, true);
+            }
+            if (text.isEmpty()) return QStringLiteral("Could not append BlackTek creature entry to %1.").arg(op.zone);
+            continue;
+        }
+        try {
+            const QByteArray bytes = text.toUtf8();
+            const auto document = toml::parse(std::string_view(bytes.constData(), static_cast<size_t>(bytes.size())));
+            const auto *zone = document.get_as<toml::table>(op.zone.toStdString());
+            const toml::node *node = zone ? zone->get(op.category.toStdString()) : nullptr;
+            if (op.category != QLatin1String("master")) {
+                const auto *array = node ? node->as_array() : nullptr;
+                node = array && size_t(op.index) < array->size() ? array->get(size_t(op.index)) : nullptr;
+            }
+            if (!node) return QStringLiteral("BlackTek creature entry no longer exists in %1.").arg(op.zone);
+            const auto region = node->source();
+            const qsizetype start = offsets(text, region.begin), end = offsets(text, region.end);
+            if (start < 0 || end <= start || end > text.size())
+                return QStringLiteral("Could not locate BlackTek creature entry in %1.").arg(op.zone);
+            if (op.action == QLatin1String("replace")) {
+                text.replace(start, end - start, op.entry);
+            } else if (op.category == QLatin1String("master")) {
+                const qsizetype lineStart = text.lastIndexOf(QLatin1Char('\n'), start) + 1;
+                qsizetype lineEnd = text.indexOf(QLatin1Char('\n'), end);
+                if (lineEnd < 0) lineEnd = text.size(); else ++lineEnd;
+                text.remove(lineStart, lineEnd - lineStart);
+            } else {
+                qsizetype removeStart = start, removeEnd = end;
+                while (removeEnd < text.size() && text[removeEnd].isSpace()) ++removeEnd;
+                if (removeEnd < text.size() && text[removeEnd] == QLatin1Char(',')) {
+                    ++removeEnd;
+                    while (removeEnd < text.size() && (text[removeEnd] == QLatin1Char(' ') || text[removeEnd] == QLatin1Char('\t'))) ++removeEnd;
+                } else {
+                    while (removeStart > 0 && text[removeStart - 1].isSpace()) --removeStart;
+                    if (removeStart > 0 && text[removeStart - 1] == QLatin1Char(',')) --removeStart;
+                }
+                text.remove(removeStart, removeEnd - removeStart);
+            }
+        } catch (const toml::parse_error &) {
+            return QStringLiteral("Could not parse BlackTek zone file %1.").arg(op.path);
+        }
+    }
+
+    // Validate all files and global zone names before mutating any sidecar.
+    QHash<QString, QString> names;
+    for (const auto &zone : m_blackTekZoneData.zones)
+        if (!texts.contains(zone.sourceFile)) names.insert(zone.name, zone.sourceFile);
+    for (auto it = texts.cbegin(); it != texts.cend(); ++it) {
+        const QByteArray bytes = it.value().toUtf8();
+        const auto parsed = BlackTekZones::parse(it.key(), bytes);
+        if (!parsed.errors.isEmpty()) return parsed.errors.join(QLatin1Char('\n'));
+        for (const auto &zone : parsed.zones) {
+            if (!zone.name.isEmpty() && names.contains(zone.name) && names.value(zone.name) != it.key())
+                return QStringLiteral("Zone %1 also exists in %2").arg(zone.name, names.value(zone.name));
+            names.insert(zone.name, it.key());
+        }
+    }
+
+    UndoAction action;
+    QHash<QString, QByteArray> updatedFiles;
+    for (auto it = texts.cbegin(); it != texts.cend(); ++it) {
+        const QByteArray previous = m_blackTekZoneEdits.value(it.key(), m_blackTekZoneOriginals.value(it.key()));
+        QByteArray updated = it.value().toUtf8();
+        const bool crlf = previous.count('\n') > 0 && previous.count('\n') == previous.count("\r\n");
+        if (crlf) { updated.replace("\r\n", "\n"); updated.replace("\n", "\r\n"); }
+        const QByteArray bom = QByteArray::fromHex("efbbbf");
+        if (previous.startsWith(bom) && !updated.startsWith(bom)) updated.prepend(bom);
+        if (previous != updated) {
+            action.zoneFiles.insert(it.key(), previous);
+            updatedFiles.insert(it.key(), updated);
+        }
+    }
+    if (action.zoneFiles.isEmpty()) return {};
+    if (m_undoGrouping) {
+        for (auto it = action.zoneFiles.cbegin(); it != action.zoneFiles.cend(); ++it)
+            if (!m_currentGroup.zoneFiles.contains(it.key())) m_currentGroup.zoneFiles.insert(it.key(), it.value());
+    } else {
+        pushUndo(std::move(action));
+    }
+    for (auto it = updatedFiles.cbegin(); it != updatedFiles.cend(); ++it)
+        restoreBlackTekZoneText(it.key(), it.value());
     setDirty(true);
     emit mapChanged();
     return {};
@@ -5506,6 +5705,76 @@ QVector<OtbmReader::BlackTekCreatureSpawn> OtbmReader::blackTekCreatureSpawns() 
         }
     }
     return spawns;
+}
+
+QVariantMap OtbmReader::blackTekCreatureEntryAt(int x, int y, int z) const
+{
+    if (!m_blackTekSpawnMode) return {};
+    for (const auto &zone : m_blackTekZoneData.zones) {
+        if (zone.playerRelative) continue;
+        const auto origin = zone.hasRange ? zone.rangeStart
+            : BlackTekZone::Position3D{zone.minX, zone.minY, zone.floor};
+        for (const auto &creature : zone.creatures) {
+            const auto position = creature.hasPosition ? creature.position : origin;
+            if (position.x != x || position.y != y || position.z != z) continue;
+            const QByteArray bytes = m_blackTekZoneEdits.value(zone.sourceFile,
+                m_blackTekZoneOriginals.value(zone.sourceFile));
+            if (bytes.isEmpty()) continue;
+            try {
+            const auto document = toml::parse(std::string_view(bytes.constData(), size_t(bytes.size())));
+            const auto *zoneNode = document.get_as<toml::table>(zone.name.toStdString());
+            if (!zoneNode) continue;
+            const auto *arrayNode = zoneNode->get(creature.category.toStdString());
+            const auto *array = arrayNode ? arrayNode->as_array() : nullptr;
+            const auto *entry = creature.category == QLatin1String("master")
+                ? arrayNode : (array && creature.index >= 0 ? array->get(size_t(creature.index)) : nullptr);
+            if (!entry) continue;
+            const auto source = entry->source();
+            const QString text = QString::fromUtf8(bytes);
+            const QStringList lines = text.split(QLatin1Char('\n'));
+            const auto offset = [&](const auto &point) -> qsizetype {
+                if (point.line < 1 || point.line > lines.size()) return -1;
+                qsizetype result = 0;
+                for (unsigned line = 1; line < point.line; ++line)
+                    result += lines[qsizetype(line - 1)].size() + 1;
+                const QString &line = lines[qsizetype(point.line - 1)];
+                qsizetype column = 0;
+                for (unsigned i = 1; i < point.column; ++i) {
+                    if (column >= line.size()) return -1;
+                    column += line[ column ].isHighSurrogate() && column + 1 < line.size()
+                        && line[column + 1].isLowSurrogate() ? 2 : 1;
+                }
+                return result + column;
+            };
+            const qsizetype start = offset(source.begin), end = offset(source.end);
+            if (start < 0 || end <= start || end > text.size()) continue;
+            qsizetype positionStart = -1, positionEnd = -1;
+            if (const auto *entryTable = entry->as_table()) {
+                if (const auto *positionNode = entryTable->get("position")) {
+                    const auto positionSource = positionNode->source();
+                    const qsizetype absoluteStart = offset(positionSource.begin);
+                    const qsizetype absoluteEnd = offset(positionSource.end);
+                    if (absoluteStart >= start && absoluteEnd >= absoluteStart && absoluteEnd <= end) {
+                        positionStart = absoluteStart - start;
+                        positionEnd = absoluteEnd - start;
+                    }
+                }
+            }
+            return {{QStringLiteral("sourceFile"), zone.sourceFile},
+                    {QStringLiteral("zoneName"), zone.name},
+                    {QStringLiteral("category"), creature.category},
+                    {QStringLiteral("index"), creature.index},
+                    {QStringLiteral("rawEntry"), text.mid(start, end - start)},
+                    {QStringLiteral("positionStart"), positionStart},
+                    {QStringLiteral("positionEnd"), positionEnd},
+                    {QStringLiteral("originX"), origin.x}, {QStringLiteral("originY"), origin.y},
+                    {QStringLiteral("originZ"), origin.z}};
+            } catch (const toml::parse_error &) {
+                return {};
+            }
+        }
+    }
+    return {};
 }
 
 QVariantList OtbmReader::blackTekZoneLabels(int floor) const
@@ -5556,6 +5825,7 @@ QVariantList OtbmReader::blackTekZoneLabels(int floor) const
                 type += QStringLiteral(": ") + details.join(QStringLiteral(", "));
             const QString name = zone.name.isEmpty() ? QStringLiteral("Unnamed zone") : zone.name;
             labels.append(QVariantMap{{"name", name}, {"description", type},
+                                      {"sourceFile", zone.sourceFile}, {"zoneName", zone.name},
                                       {"color", isSpawn ? QStringLiteral("#ffc276") : QStringLiteral("#a5ecff")},
                                       {"flags", 0}, {"worldX", bounds.x() + bounds.width() / 2.0},
                                       {"worldY", bounds.y() + bounds.height() / 2.0}});

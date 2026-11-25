@@ -1017,7 +1017,33 @@ QVariantList MapView::previewMonsterLabels(int centerX, int centerY, int z, int 
     const int halfY = std::clamp(rows, 1, 512) / 2 + 2;
     const auto floorIt = m_chunkStore.tiles().constFind(z);
     const auto previewFloor=m_luaPreviewChunks.constFind(z);
-    if (floorIt == m_chunkStore.tiles().cend() && previewFloor==m_luaPreviewChunks.cend()) return result;
+    const auto spawnFloor = m_blackTekSpawnChunks.constFind(z);
+    if (floorIt == m_chunkStore.tiles().cend() && previewFloor == m_luaPreviewChunks.cend()
+        && spawnFloor == m_blackTekSpawnChunks.cend()) return result;
+    const auto appendLabel = [&](const CreatureStore::CreatureType &creature,
+                                 const QString &name, bool npc, int x, int y,
+                                 const OtbmTile *tile) {
+        if (std::abs(x - centerX) > halfX || std::abs(y - centerY) > halfY) return;
+        const auto *outfit = creature.lookType > 0
+            ? m_dat->outfitByLookType(static_cast<uint16_t>(creature.lookType))
+            : (m_otb && creature.lookItem > 0
+                ? m_dat->itemByClientId(static_cast<uint16_t>(
+                    m_otb->clientIdForServerId(creature.lookItem))) : nullptr);
+        if (!outfit || outfit->sprite_ids.empty()) return;
+        int elevation = 0;
+        if (m_otb && tile) for (const auto &item : tile->items) {
+            const auto *client = m_dat->itemByClientId(
+                static_cast<uint16_t>(m_otb->clientIdForServerId(item.server_id)));
+            if (client && client->has(ClientProperty::Elevation)) elevation += client->elevation;
+        }
+        static thread_local IngamePreviewScene information;
+        const auto bitmap = information.nameBitmap(name, npc);
+        result.append(QVariantMap{{QStringLiteral("name"), name},
+            {QStringLiteral("nameSource"), bitmap.value("nameSource")},
+            {QStringLiteral("nameWidth"), bitmap.value("nameWidth")},
+            {QStringLiteral("x"), x}, {QStringLiteral("y"), y},
+            {QStringLiteral("elevation"), elevation}, {QStringLiteral("npc"), npc}});
+    };
     for (int cy = floorDiv(centerY - halfY, kChunkTiles); cy <= floorDiv(centerY + halfY, kChunkTiles); ++cy)
         for (int cx = floorDiv(centerX - halfX, kChunkTiles); cx <= floorDiv(centerX + halfX, kChunkTiles); ++cx) {
             QVector<const OtbmTile*> visible;
@@ -1029,25 +1055,21 @@ QVariantList MapView::previewMonsterLabels(int centerX, int centerY, int z, int 
             for (const auto *tile : visible) {
                 if (!tile || tile->creature_name.isEmpty()
                     || std::abs(tile->x - centerX) > halfX || std::abs(tile->y - centerY) > halfY) continue;
-                const auto *creature = m_creatureStore->byName(tile->creature_name);
-                if (!creature) continue;
-                const auto *outfit = creature->lookType > 0
-                    ? m_dat->outfitByLookType(static_cast<uint16_t>(creature->lookType))
-                    : (m_otb && creature->lookItem > 0 ? m_dat->itemByClientId(static_cast<uint16_t>(m_otb->clientIdForServerId(creature->lookItem))) : nullptr);
-                if (!outfit || outfit->sprite_ids.empty()) continue;
-                int elevation = 0;
-                if (m_otb) for (const auto &item : tile->items) {
-                    const auto *client = m_dat->itemByClientId(static_cast<uint16_t>(m_otb->clientIdForServerId(item.server_id)));
-                    if (client && client->has(ClientProperty::Elevation)) elevation += client->elevation;
-                }
-                static thread_local IngamePreviewScene information;
-                const auto bitmap = information.nameBitmap(tile->creature_name.value(), tile->creature_is_npc);
-                result.append(QVariantMap{{QStringLiteral("name"), tile->creature_name.value()},
-                    {QStringLiteral("nameSource"), bitmap.value("nameSource")},
-                    {QStringLiteral("nameWidth"), bitmap.value("nameWidth")},
-                    {QStringLiteral("x"), tile->x}, {QStringLiteral("y"), tile->y},
-                    {QStringLiteral("elevation"), elevation},
-                    {QStringLiteral("npc"), tile->creature_is_npc}});
+                if (const auto *creature = m_creatureStore->byName(tile->creature_name))
+                    appendLabel(*creature, tile->creature_name.value(), tile->creature_is_npc,
+                                tile->x, tile->y, tile);
+            }
+            if (spawnFloor == m_blackTekSpawnChunks.cend()) continue;
+            const auto spawns = spawnFloor->constFind(chunkKey(cx, cy));
+            if (spawns == spawnFloor->cend()) continue;
+            for (const auto &spawn : spawns.value()) {
+                if (!spawn.hasCreature || std::abs(spawn.x - centerX) > halfX
+                    || std::abs(spawn.y - centerY) > halfY
+                    || m_luaPreviewTiles.contains(selKey(spawn.x, spawn.y, z))) continue;
+                const auto *tile = m_otbm->tileAt(spawn.x, spawn.y, z);
+                if (tile && !tile->creature_name.isEmpty()) continue;
+                appendLabel(spawn.creature, spawn.creature.name, spawn.creature.isNpc,
+                            spawn.x, spawn.y, tile);
             }
         }
     return result;

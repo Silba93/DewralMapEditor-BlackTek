@@ -264,12 +264,29 @@ QVariantMap MapView::contextInfo() const
                                        m_navigationController.floor())
                     : QString());
 
+    const int contextX = m_itemController.contextX();
+    const int contextY = m_itemController.contextY();
+    const int contextZ = m_navigationController.floor();
+    const quint64 contextKey = selKey(contextX, contextY, contextZ);
+    const bool selectedBlackTekCreature = m_selectionController.selected().size() == 1
+        && m_selectionController.selected().contains(contextKey)
+        && m_selectionController.entity(contextKey) == -2;
+    const auto *blackTekCreature = selectedBlackTekCreature
+        ? blackTekCreatureAt(contextX, contextY, contextZ) : nullptr;
+    const bool targetCreature = !m_itemController.contextTargetsItem()
+        && ((tile && !tile->creature_name.isEmpty()) || blackTekCreature);
+    const QString creatureName = tile && !tile->creature_name.isEmpty()
+        ? tile->creature_name
+        : (blackTekCreature ? blackTekCreature->name : QString());
+    m.insert(QStringLiteral("targetCreature"), targetCreature);
+    m.insert(QStringLiteral("creatureName"), creatureName);
+
     QVariantMap brushes;
     QVariantList collections;
-    const bool singleTile = tile && m_selectionController.selected().size() == 1;
+    const bool singleTile = (tile || targetCreature) && m_selectionController.selected().size() == 1;
     // Like RME, selecting a whole tile still exposes the top selected item's brush.
     const bool singleItem = singleTile && has && m_itemController.contextTargetsItem();
-    if (singleTile) {
+    if (tile && singleTile) {
         const auto candidate = [this](const QString &kind, int id) {
             const QString name = typedBrushName(kind, id);
             if (name.isEmpty()) return QVariantMap();
@@ -330,9 +347,8 @@ QVariantMap MapView::contextInfo() const
     m.insert(QStringLiteral("hasSelectedItem"), singleItem);
 
     m.insert(QStringLiteral("selectionCount"), m_selectionController.selected().size());
-    m.insert(QStringLiteral("creatureName"),
-             tile ? tile->creature_name.value() : QString());
-    m.insert(QStringLiteral("creatureIsNpc"), tile && tile->creature_is_npc);
+    m.insert(QStringLiteral("creatureIsNpc"), tile && !tile->creature_name.isEmpty()
+                 ? tile->creature_is_npc : (blackTekCreature && blackTekCreature->isNpc));
     m.insert(QStringLiteral("creatureSpawntime"), tile ? tile->creature_spawntime : 0);
     m.insert(QStringLiteral("creatureDirection"), tile ? tile->creature_direction : 0);
     m.insert(QStringLiteral("spawnRadius"), tile ? tile->spawn_radius : 0);

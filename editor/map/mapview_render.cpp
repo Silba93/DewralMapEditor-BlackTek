@@ -1232,6 +1232,13 @@ void MapView::renderCollectGhostInstances(std::vector<float> &out)
     if (m_hoverX < 0 || atlasSlots.empty() || !m_otb || !m_dat)
         return;
 
+    const auto appendGhostQuads = [&](const std::vector<QuadRef> &quads) {
+        for (const QuadRef &q : quads) {
+            const QRect &slot = atlasSlots[static_cast<size_t>(q.atlasSlot)];
+            out.insert(out.end(), {static_cast<float>(q.worldX), static_cast<float>(q.worldY),
+                                   static_cast<float>(slot.x()), static_cast<float>(slot.y())});
+        }
+    };
     const auto currentHook = [this](const ClientItem *item, int x, int y, int z) {
         return item->has(ClientProperty::Hangable)
             ? hookPatternForTile(m_otbm ? m_otbm->tileAt(x, y, z) : nullptr, m_otb, m_dat) : 0;
@@ -1313,6 +1320,7 @@ void MapView::renderCollectGhostInstances(std::vector<float> &out)
     }
 
     if (m_selectionController.pasting() && !m_selectionController.clipboard().empty()) {
+        std::vector<QuadRef> creatureQuads;
         for (const ClipTile &ct : m_selectionController.clipboard()) {
             const int tx = m_hoverX + ct.dx, ty = m_hoverY + ct.dy;
             for (const OtbmMapItem &ci : ct.items) {
@@ -1338,6 +1346,12 @@ void MapView::renderCollectGhostInstances(std::vector<float> &out)
                             out.push_back(static_cast<float>(slot.x()));
                             out.push_back(static_cast<float>(slot.y()));
                         }
+            }
+            if (ct.blackTekCreature && ct.dz == 0 && m_creatureStore && !ct.creature.isEmpty()) {
+                creatureQuads.clear();
+                appendCreatureQuads(m_creatureStore->byNameAndType(ct.creature, ct.npc),
+                                    tx, ty, 0, 0, creatureQuads);
+                appendGhostQuads(creatureQuads);
             }
         }
         return;
@@ -1468,16 +1482,26 @@ void MapView::renderCollectGhostInstances(std::vector<float> &out)
 
     std::vector<QuadRef> quads;
     for (quint64 key : m_selectionController.selected()) {
-        const OtbmTile *tile = m_otbm->tileAt(selX(key), selY(key), selZ(key));
-        if (!tile) continue;
-        const int targetX = static_cast<int>(tile->x) + dx;
-        const int targetY = static_cast<int>(tile->y) + dy;
-        const int targetZ = static_cast<int>(tile->z) + dz;
+        const int x = selX(key), y = selY(key), z = selZ(key);
+        const OtbmTile *tile = m_otbm->tileAt(x, y, z);
+        const int entity = m_selectionController.entity(key);
+        const auto *blackTekCreature = m_selectionController.wholeStack() || entity == -2
+            ? blackTekCreatureAt(x, y, z) : nullptr;
+        if (!tile && !blackTekCreature) continue;
+        const int targetX = x + dx;
+        const int targetY = y + dy;
+        const int targetZ = z + dz;
         if (targetZ != m_navigationController.floor()) continue;
         if (targetX < 0 || targetX > 65535
             || targetY < 0 || targetY > 65535
             || targetZ < 0 || targetZ > 15) continue;
 
+        if (!tile) {
+            quads.clear();
+            appendCreatureQuads(blackTekCreature, targetX, targetY, 0, 0, quads);
+            appendGhostQuads(quads);
+            continue;
+        }
         OtbmTile previewTile = *tile;
         previewTile.x = static_cast<uint16_t>(targetX);
         previewTile.y = static_cast<uint16_t>(targetY);
@@ -1496,19 +1520,16 @@ void MapView::renderCollectGhostInstances(std::vector<float> &out)
             }
         }
         quads.clear();
-        const int entity = m_selectionController.entity(key);
         if (!m_selectionController.wholeStack() && entity != -1) {
-            appendItemQuads(&previewTile, quads);
+            appendItemQuads(&previewTile, quads, nullptr, blackTekCreature);
             quads.erase(std::remove_if(quads.begin(), quads.end(),
                 [entity](const QuadRef &q) { return q.itemIndex != entity; }), quads.end());
-        } else appendTopItemQuads(&previewTile, quads);
-        for (const QuadRef &q : quads) {
-            const QRect &slot = atlasSlots[static_cast<size_t>(q.atlasSlot)];
-            out.push_back(static_cast<float>(q.worldX));
-            out.push_back(static_cast<float>(q.worldY));
-            out.push_back(static_cast<float>(slot.x()));
-            out.push_back(static_cast<float>(slot.y()));
+        } else {
+            appendTopItemQuads(&previewTile, quads);
+            if (blackTekCreature)
+                appendCreatureQuads(blackTekCreature, targetX, targetY, 0, 0, quads);
         }
+        appendGhostQuads(quads);
     }
 }
 

@@ -14,6 +14,7 @@
 #include <QTemporaryDir>
 #include <QThread>
 
+#include <algorithm>
 #include <functional>
 
 namespace {
@@ -400,7 +401,7 @@ int main(int argc, char **argv)
                      && creatures.saveCreature({}, QStringLiteral("Alice"), true, 1, 0, 0, 0, 0, 0),
                  "Could not create initial creature definitions")) return 1;
     {
-        const QByteArray monsterZone = "[Monsters]\npositions = [\"1:1:7\"]\n"
+        const QByteArray monsterZone = "[Monsters]\npositions = [\"1:1:7\", \"3:1:7\"]\n"
             "spawn_type = \"monster\"\npolicy = \"fixed\"\n"
             "monsters = [{ list = [{ name = \"Missing Outfit\" }, { name = \"Rat\" }], "
             "position = \"0:0:0\" }]\n";
@@ -420,7 +421,11 @@ int main(int argc, char **argv)
         blackTekMap.setBlackTekSpawnMode(true);
         if (!require(blackTekMap.linkBlackTekZones(zones), "Could not load render zones")) return 1;
 
-        MapView blackTekView;
+        class BlackTekView : public MapView {
+        public:
+            using MapView::mousePressEvent;
+            using MapView::mouseReleaseEvent;
+        } blackTekView;
         blackTekView.setOtb(&otb);
         blackTekView.setDat(&dat);
         blackTekView.setSpr(&spr);
@@ -430,6 +435,139 @@ int main(int argc, char **argv)
         blackTekView.setTileSize(32);
         blackTekView.centerOnTile(1, 1, 7);
         if (!expectOutfits(blackTekView, red, red)) return 1;
+        const auto blackTekLabels = blackTekView.previewMonsterLabels(1, 1, 7, 15, 11);
+        bool sawMonsterLabel = false;
+        bool sawNpcLabel = false;
+        for (const QVariant &entry : blackTekLabels) {
+            const auto label = entry.toMap();
+            if (label.value("nameSource").toString().isEmpty()) continue;
+            const QString name = label.value("name").toString();
+            const bool npc = label.value("npc").toBool();
+            sawMonsterLabel |= name == QStringLiteral("Rat") && !npc;
+            sawNpcLabel |= name == QStringLiteral("Alice") && npc;
+        }
+        if (!require(sawMonsterLabel && sawNpcLabel,
+                     "BlackTek creatures did not use the standard monster and NPC labels")) return 1;
+        blackTekView.setSelectionMode(true);
+        const auto tilePoint = [&](int x) {
+            return QPointF((x + 0.5 - blackTekView.renderOriginX()) * blackTekView.tileSize(),
+                           (1.5 - blackTekView.renderOriginY()) * blackTekView.tileSize());
+        };
+        const auto clickTile = [&](int x, Qt::MouseButton button = Qt::LeftButton) {
+            const QPointF point = tilePoint(x);
+            QMouseEvent press(QEvent::MouseButtonPress, point, point,
+                              button, button, Qt::NoModifier);
+            QMouseEvent release(QEvent::MouseButtonRelease, point, point,
+                                button, Qt::NoButton, Qt::NoModifier);
+            blackTekView.mousePressEvent(&press);
+            blackTekView.mouseReleaseEvent(&release);
+        };
+        clickTile(1, Qt::RightButton);
+        const auto creatureContext = blackTekView.contextInfo();
+        if (!require(blackTekView.selectionCount() == 1
+                         && creatureContext.value("targetCreature").toBool()
+                         && creatureContext.value("creatureName").toString() == QStringLiteral("Rat"),
+                     "Right-click did not select the BlackTek creature over its ground tile")) return 1;
+        blackTekView.copySelection();
+        blackTekView.startPasting();
+        clickTile(2);
+        if (!require(blackTekMap.blackTekCreatureSpawns().size() == 2,
+                     "A BlackTek spawn was pasted on top of another creature")) return 1;
+        blackTekView.startPasting();
+        clickTile(3);
+        const auto pastedSpawns = blackTekMap.blackTekCreatureSpawns();
+        const auto copiedMonster = std::find_if(pastedSpawns.cbegin(), pastedSpawns.cend(),
+            [](const auto &spawn) {
+                return spawn.x == 3 && spawn.y == 1 && spawn.z == 7
+                    && spawn.names == QStringList{QStringLiteral("Missing Outfit"), QStringLiteral("Rat")};
+            });
+        if (!require(copiedMonster != pastedSpawns.cend(),
+                     "BlackTek creature paste lost its TOML spawn or alternatives")) return 1;
+        blackTekView.cancelPasting();
+        blackTekView.undo();
+        blackTekView.clearSelection();
+        if (!require(blackTekMap.blackTekCreatureSpawns().size() == 2,
+                     "Undo did not remove the pasted BlackTek spawn")) return 1;
+        blackTekView.startPasting();
+        clickTile(5);
+        if (!require(blackTekMap.blackTekCreatureSpawns().size() == 3
+                         && !blackTekMap.blackTekSpawnZoneAt(6, 1, 7, false).isEmpty(),
+                     "Pasting a monster outside existing zones must create a default zone")) return 1;
+        blackTekView.undo();
+        if (!require(blackTekMap.blackTekCreatureSpawns().size() == 2
+                         && blackTekMap.blackTekSpawnZoneAt(5, 1, 7, false).isEmpty(),
+                     "Undo must remove the pasted monster and its default zone together")) return 1;
+        const auto monsterAt = [&](int x) {
+            const auto spawns = blackTekMap.blackTekCreatureSpawns();
+            return std::any_of(spawns.cbegin(), spawns.cend(), [=](const auto &spawn) {
+                return spawn.x == x && spawn.y == 1 && spawn.z == 7
+                    && spawn.names == QStringList{QStringLiteral("Missing Outfit"), QStringLiteral("Rat")};
+            });
+        };
+        const QPointF moveStart = tilePoint(1), moveEnd = tilePoint(3);
+        QMouseEvent movePress(QEvent::MouseButtonPress, moveStart, moveStart,
+                              Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QMouseEvent moveRelease(QEvent::MouseButtonRelease, moveEnd, moveEnd,
+                                Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+        blackTekView.mousePressEvent(&movePress);
+        blackTekView.mouseReleaseEvent(&moveRelease);
+        if (!require(!monsterAt(1) && monsterAt(3)
+                         && blackTekMap.tileAt(1, 1, 7)
+                         && blackTekMap.tileAt(1, 1, 7)->items.size() == 1,
+                     "Moving a BlackTek creature lost its TOML entry or edited its ground")) return 1;
+        clickTile(3, Qt::RightButton);
+        const auto spawnOnlyContext = blackTekView.contextInfo();
+        if (!require(blackTekView.selectionCount() == 1
+                         && spawnOnlyContext.value("targetCreature").toBool()
+                         && !spawnOnlyContext.value("hasItem").toBool(),
+                     "Right-click did not select a BlackTek creature on an empty tile")) return 1;
+        blackTekView.undo();
+        if (!require(monsterAt(1) && !monsterAt(3), "Undo did not restore the moved creature")) return 1;
+        blackTekView.redo();
+        if (!require(!monsterAt(1) && monsterAt(3), "Redo did not move the creature again")) return 1;
+        blackTekView.undo();
+        blackTekView.clearSelection();
+        clickTile(1);
+        blackTekView.cutSelection();
+        if (!require(!monsterAt(1), "Cut did not remove the BlackTek spawn")) return 1;
+        blackTekView.startPasting();
+        clickTile(3);
+        if (!require(monsterAt(3), "Pasting a cut BlackTek creature lost its spawn")) return 1;
+        blackTekView.undo();
+        blackTekView.undo();
+        if (!require(monsterAt(1) && !monsterAt(3), "Undo did not restore the cut creature")) return 1;
+        blackTekView.clearSelection();
+        clickTile(1);
+        blackTekView.deleteSelectedTop();
+        if (!require(!monsterAt(1), "Delete did not remove the BlackTek spawn")) return 1;
+        blackTekView.undo();
+        blackTekView.clearSelection();
+        clickTile(1);
+        blackTekView.moveSelection(4, 0);
+        if (!require(!monsterAt(1) && monsterAt(5)
+                         && !blackTekMap.blackTekSpawnZoneAt(6, 1, 7, false).isEmpty(),
+                     "Moving a BlackTek monster outside a zone did not create a spawn zone")) return 1;
+        blackTekView.undo();
+        if (!require(monsterAt(1) && !monsterAt(5)
+                         && blackTekMap.blackTekSpawnZoneAt(5, 1, 7, false).isEmpty(),
+                     "Undo did not restore the creature and remove its generated zone")) return 1;
+        blackTekView.clearSelection();
+        blackTekView.setSelectionMode(false);
+        blackTekView.selectCreatureBrush(QStringLiteral("Rat"), false);
+        clickTile(5);
+        const auto defaultSpawns = blackTekMap.blackTekCreatureSpawns();
+        const bool placedInNewZone = std::any_of(defaultSpawns.cbegin(), defaultSpawns.cend(),
+            [](const auto &spawn) {
+                return spawn.x == 5 && spawn.y == 1 && spawn.z == 7
+                    && spawn.names == QStringList{QStringLiteral("Rat")};
+            });
+        if (!require(placedInNewZone && !blackTekMap.blackTekSpawnZoneAt(6, 1, 7, false).isEmpty(),
+                     "Placing a BlackTek monster outside a zone did not create a surrounding spawn zone")) return 1;
+        blackTekView.undo();
+        if (!require(blackTekMap.blackTekCreatureSpawns().size() == 2
+                         && blackTekMap.blackTekSpawnZoneAt(5, 1, 7, false).isEmpty(),
+                     "Undo did not remove the auto-created spawn and zone together")) return 1;
+        blackTekView.selectCreatureBrush({}, false);
         std::vector<float> worldZones, spawnZones, selectedZones, borders, markers, paint;
         const auto collectZones = [&] {
             blackTekView.renderCollectBlackTekZoneInstances(

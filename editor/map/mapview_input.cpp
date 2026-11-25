@@ -79,6 +79,8 @@ MapView::SelectionHit MapView::pickSelection(const QPointF &position) const
     std::lock_guard<std::recursive_mutex> lock(m_dataMutex);
     if (!pixelPerfectSelection() || m_atlasService.image().isNull()) {
         const auto *tile = currentFloorTileAt(clicked.x(), clicked.y());
+        if (m_showCreatures && blackTekCreatureAt(clicked.x(), clicked.y(), m_navigationController.floor()))
+            return {clicked, -2, true};
         return {clicked, -1, tile && (!tile->items.empty()
             || !tile->creature_name.isEmpty() || tile->spawn_radius > 0)};
     }
@@ -92,9 +94,13 @@ MapView::SelectionHit MapView::pickSelection(const QPointF &position) const
         for (int x = clicked.x() + 8; x >= clicked.x(); --x) {
             if (x < 0 || x > 65535 || y < 0 || y > 65535) continue;
             const auto *tile = currentFloorTileAt(x, y);
-            if (!tile) continue;
+            const auto *blackTekCreature = m_showCreatures
+                ? blackTekCreatureAt(x, y, m_navigationController.floor()) : nullptr;
+            if (!tile && !blackTekCreature) continue;
             std::vector<QuadRef> quads;
-            appendItemQuads(tile, quads);
+            appendItemQuads(tile, quads, nullptr, blackTekCreature);
+            if (!tile && blackTekCreature)
+                appendCreatureQuads(blackTekCreature, x, y, 0, 0, quads);
             for (auto q = quads.rbegin(); q != quads.rend(); ++q) {
                 const int lx = px - q->worldX, ly = py - q->worldY;
                 if (lx < 0 || lx >= kSprite || ly < 0 || ly >= kSprite) continue;
@@ -163,6 +169,8 @@ void MapView::applyRubberBand()
     if (m_selectionController.floorMode() == 1) zBottom = 15;
     else if (m_selectionController.floorMode() == 2) zBottom = renderBottomFloor();
 
+    const auto blackTekSpawns = m_otbm && m_otbm->blackTekSpawnMode()
+        ? m_otbm->blackTekCreatureSpawns() : QVector<OtbmReader::BlackTekCreatureSpawn>{};
     if (m_otbm) for (int z = m_navigationController.floor(); z <= zBottom; ++z) {
         const int comp = m_selectionController.compensated() ? z - m_navigationController.floor() : 0;
         const qint64 minX = std::max<qint64>(0, qint64(x0) - comp);
@@ -174,6 +182,10 @@ void MapView::applyRubberBand()
             [&](const OtbmTile &tile) {
                 m_selectionController.selected().insert(selKey(tile.x, tile.y, z));
             });
+        for (const auto &spawn : blackTekSpawns)
+            if (spawn.z == z && spawn.x >= minX && spawn.x <= maxX
+                && spawn.y >= minY && spawn.y <= maxY)
+                m_selectionController.selected().insert(selKey(spawn.x, spawn.y, z));
     }
     notifySelectionChanged();
 }
@@ -464,6 +476,9 @@ void MapView::mousePressEvent(QMouseEvent *event)
         } else {
 
             if (!m_selectionController.selected().contains(k)
+                || (picked.entity == -2
+                    && (m_selectionController.wholeStack()
+                        || m_selectionController.entity(k) != -2))
                 || (!m_selectionController.wholeStack() && m_selectionController.entity(k) != picked.entity)) {
                 m_selectionController.selected().clear();
                 m_selectionController.entities.clear();
@@ -479,7 +494,7 @@ void MapView::mousePressEvent(QMouseEvent *event)
             m_selectionController.moveSourceY() = anchor.y();
             m_selectionController.moveSourceZ() = m_navigationController.floor();
 
-            m_selectionController.moveServerId() = tile->items.empty() ? 0 : tile->items.back().server_id;
+            m_selectionController.moveServerId() = !tile || tile->items.empty() ? 0 : tile->items.back().server_id;
             emit contentUpdated(); update();
         }
     } else if (event->button() == Qt::MiddleButton) {
@@ -490,7 +505,7 @@ void MapView::mousePressEvent(QMouseEvent *event)
         setSelectionMode(true);
         m_itemController.menuPending() = true;
 
-        const auto picked = pickSelection(event->position());
+        auto picked = pickSelection(event->position());
         const QPoint t = event->modifiers().testFlag(Qt::ShiftModifier)
             ? tileAtScreen(event->position()) : picked.tile;
         if (m_itemController.contextX() != t.x() || m_itemController.contextY() != t.y())
@@ -498,9 +513,17 @@ void MapView::mousePressEvent(QMouseEvent *event)
         m_itemController.contextX() = t.x();
         m_itemController.contextY() = t.y();
         const OtbmTile *contextTile = picked.hit ? currentFloorTileAt(t.x(), t.y()) : nullptr;
+        if (picked.entity == -1 && contextTile && m_showCreatures
+            && !contextTile->creature_name.isEmpty())
+            picked.entity = -2;
         m_itemController.contextItemIndex() = picked.entity >= 0 ? picked.entity
             : (contextTile && !contextTile->items.empty() ? int(contextTile->items.size()) - 1 : -1);
-        if (picked.entity != -1) m_itemController.contextTargetsItem() = picked.entity >= 0;
+        if (picked.entity != -1) {
+            m_itemController.contextTargetsItem() = picked.entity >= 0;
+        } else if (contextTile) {
+            m_itemController.contextTargetsItem() = !(m_showSpawns && contextTile->spawn_radius > 0)
+                && !(m_showCreatures && !contextTile->creature_name.isEmpty());
+        }
         const quint64 k = selKey(t.x(), t.y(), m_navigationController.floor());
         if (event->modifiers() & Qt::ShiftModifier) {
             m_itemController.contextTargetsItem() = true;
@@ -513,8 +536,12 @@ void MapView::mousePressEvent(QMouseEvent *event)
             m_selectionController.rubberBase() = m_selectionController.selected();
             applyRubberBand();
             emit contentUpdated(); update();
-        } else if (contextTile) {
+        } else if (contextTile || picked.entity == -2) {
             if (!m_selectionController.selected().contains(k)
+                || (picked.entity == -2
+                    && (m_selectionController.wholeStack()
+                        || m_selectionController.selected().size() != 1
+                        || m_selectionController.entity(k) != -2))
                 || (!m_selectionController.wholeStack() && m_selectionController.entity(k) != picked.entity)) {
                 m_selectionController.selected().clear();
                 m_selectionController.entities.clear();

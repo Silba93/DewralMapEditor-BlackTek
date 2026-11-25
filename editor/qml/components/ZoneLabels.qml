@@ -8,6 +8,8 @@ Item {
     id: root
     required property var mapView
     property var blackTekReader: null
+    property bool clickBlackTekLabelsToPaint: true
+    signal blackTekPaintRequested(string sourceFile, string name)
     property int blackTekRevision: 0
     readonly property bool showBlackTekLabels: !!blackTekReader?.blackTekSpawnMode
         && !!blackTekReader?.loaded && !!mapView.showBlackTekZones
@@ -47,7 +49,8 @@ Item {
                 next.push(label);
         }
         next.sort((a,b) => a.worldX - b.worldX || a.worldY - b.worldY || a.name.localeCompare(b.name));
-        const keys = ["worldX", "worldY", "name", "color", "flags", "zoneIds", "description"];
+        const keys = ["worldX", "worldY", "name", "color", "flags", "zoneIds", "description",
+                      "sourceFile", "zoneName"];
         let changed = next.length !== regions.length;
         for (let i = 0; !changed && i < next.length; ++i)
             for (const key of keys)
@@ -80,6 +83,15 @@ Item {
                 && ("," + modelData.zoneIds + ",").indexOf("," + root.mapView.numberedZoneId + ",") >= 0
             border { width: hover.hovered || activeNumberedZone || (root.mapView.activeZone & modelData.flags) ? 2 : 1; color: modelData.color }
             HoverHandler { id: hover }
+            MouseArea {
+                anchors.fill: parent
+                enabled: root.clickBlackTekLabelsToPaint && label.blackTek
+                    && !!label.modelData.sourceFile && !!label.modelData.zoneName
+                acceptedButtons: Qt.LeftButton
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.blackTekPaintRequested(
+                    label.modelData.sourceFile, label.modelData.zoneName)
+            }
             ToolTip.visible: hover.hovered
             ToolTip.delay: 250
             ToolTip.text: modelData.name + "\n" + (modelData.description || "")

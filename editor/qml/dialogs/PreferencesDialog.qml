@@ -364,6 +364,14 @@ DmeDialog {
                     }
                 }
                 PrefCard {
+                    title: "BlackTek zones"
+                    DmeCheckBox {
+                        text: "Click a zone label to open its painter"
+                        checked: dialog.settings.clickBlackTekZoneLabelsToPaint
+                        onClicked: dialog.settings.clickBlackTekZoneLabelsToPaint = !checked
+                    }
+                }
+                PrefCard {
                     title: "Map lighting"
                     PrefRow {
                         label: "Minimum zoom"

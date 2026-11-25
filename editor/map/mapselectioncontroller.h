@@ -24,6 +24,11 @@ struct MapClipboardTile {
     int npcRadius = 0;
     QVector<OtbmSpawnAlternative> monsterChoices;
     TileZoneIds zoneIds;
+    QString blackTekCategory;
+    QString blackTekRawEntry;
+    qsizetype blackTekPositionStart = -1;
+    qsizetype blackTekPositionEnd = -1;
+    bool blackTekCreature = false;
 };
 
 class MapSelectionController

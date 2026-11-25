@@ -1303,6 +1303,8 @@ private:
     void ensureCreatureSprites(const CreatureStore::CreatureType &creature);
     void placeSpawnAt(int x, int y);
     void placeCreatureBrushAt(int x, int y);
+    QString appendDefaultBlackTekSpawnZone(QString text, int x, int y, int z,
+                                           bool npc, const QString &entry) const;
     QVariantMap createBlackTekZone(const QVariantMap &options,
                                    const QSet<quint64> *positions = nullptr);
     bool tileInAnySpawn(int x, int y) const;

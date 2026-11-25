@@ -15,6 +15,8 @@
 #include <QDebug>
 #include <QDir>
 #include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
 #include <QSet>
 #include <algorithm>
 #include <cmath>
@@ -37,6 +39,26 @@ bool appendTomlString(QString &out, const QString &value)
     }
     out += QLatin1Char('"');
     return true;
+}
+
+QString tomlString(const QString &value)
+{
+    const QByteArray encoded = QJsonDocument(QJsonArray{value}).toJson(QJsonDocument::Compact);
+    return QString::fromUtf8(encoded.mid(1, encoded.size() - 2));
+}
+
+QString creatureEntryAtPosition(QString entry, qsizetype positionStart,
+                                qsizetype positionEnd, int x, int y, int z)
+{
+    const QString value = tomlString(QStringLiteral("%1:%2:%3").arg(x).arg(y).arg(z));
+    if (positionStart >= 0 && positionEnd > positionStart && positionEnd <= entry.size()) {
+        entry.replace(positionStart, positionEnd - positionStart, value);
+        return entry;
+    }
+    const qsizetype opening = entry.indexOf(QLatin1Char('{'));
+    if (opening < 0) return {};
+    entry.insert(opening + 1, QStringLiteral(" position = %1, ").arg(value));
+    return entry;
 }
 
 bool isValidZoneFlag(const QString &flag)
@@ -71,10 +93,33 @@ bool isValidZoneTrigger(const QString &trigger)
 void MapView::deleteSelectedTop()
 {
     if (!m_otbm || m_selectionController.selected().isEmpty()) return;
+    QVariantList blackTekRemovals;
+    QSet<quint64> removedBlackTekPositions;
+    if (m_otbm->blackTekSpawnMode()) {
+        for (quint64 key : m_selectionController.selected()) {
+            if (!m_selectionController.wholeStack()
+                && m_selectionController.entity(key) != -2) continue;
+            const QVariantMap entry = m_otbm->blackTekCreatureEntryAt(selX(key), selY(key), selZ(key));
+            if (entry.isEmpty()) continue;
+            QVariantMap operation = entry;
+            operation.insert(QStringLiteral("action"), QStringLiteral("remove"));
+            blackTekRemovals.append(operation);
+            removedBlackTekPositions.insert(key);
+        }
+    }
     bool any = false;
     {
         std::lock_guard<std::recursive_mutex> dlk(m_dataMutex);
         m_otbm->beginUndoGroup();
+        if (!blackTekRemovals.isEmpty()) {
+            const QString error = m_otbm->editBlackTekCreatureEntries(blackTekRemovals);
+            if (!error.isEmpty()) {
+                m_otbm->cancelUndoGroup();
+                emit operationWarning(error);
+                return;
+            }
+            any = true;
+        }
         for (quint64 key : m_selectionController.selected()) {
             const int x = selX(key), y = selY(key), z = selZ(key);
 
@@ -90,7 +135,12 @@ void MapView::deleteSelectedTop()
             } else if (m_selectionController.entity(key) >= 0) {
                 removedHere = m_otbm->removeItemAt(x, y, z, m_selectionController.entity(key));
             } else if (m_selectionController.entity(key) == -2) {
-                removedHere = m_otbm->clearCreatureAt(x, y, z);
+                // BlackTek entries were staged above. A pixel-perfect or
+                // context-picked native creature shares this entity id, so
+                // clear its tile representation when no BlackTek entry exists.
+                if (!removedBlackTekPositions.contains(key)
+                    && m_otbm->blackTekCreatureEntryAt(x, y, z).isEmpty())
+                    removedHere = m_otbm->clearCreatureAt(x, y, z);
             } else if (m_selectionController.entity(key) == -3) {
                 removedHere = m_otbm->clearSpawnAt(x, y, z);
                 if (removedHere) invalidateSpawnIndex();
@@ -130,12 +180,35 @@ void MapView::copySelection()
     for (quint64 key : m_selectionController.selected()) {
         const int x = selX(key), y = selY(key), z = selZ(key);
         const OtbmTile *t = m_otbm->tileAt(x, y, z);
-        if (!t) continue;
         ClipTile ct;
         ct.dx = x - minX;
         ct.dy = y - minY;
 
         ct.dz = z - m_navigationController.floor();
+
+        const bool creatureOnly = !m_selectionController.wholeStack()
+            && m_selectionController.entity(key) == -2;
+        if (m_otbm->blackTekSpawnMode()
+            && (m_selectionController.wholeStack() || creatureOnly)) {
+            const QVariantMap entry = m_otbm->blackTekCreatureEntryAt(x, y, z);
+            if (!entry.isEmpty()) {
+                ct.blackTekCreature = true;
+                ct.blackTekCategory = entry.value(QStringLiteral("category")).toString();
+                ct.blackTekRawEntry = entry.value(QStringLiteral("rawEntry")).toString();
+                ct.blackTekPositionStart = entry.value(QStringLiteral("positionStart")).toInt();
+                ct.blackTekPositionEnd = entry.value(QStringLiteral("positionEnd")).toInt();
+                if (const auto *creature = blackTekCreatureAt(x, y, z)) {
+                    ct.creature = creature->name;
+                    ct.npc = creature->isNpc;
+                }
+            }
+        }
+        if (creatureOnly && !ct.blackTekCreature
+            && (!t || t->creature_name.isEmpty())) continue;
+        if (!t) {
+            if (ct.blackTekCreature) m_selectionController.clipboard().push_back(std::move(ct));
+            continue;
+        }
 
         if (m_selectionController.wholeStack()) {
             ct.items.assign(t->items.begin(), t->items.end());
@@ -153,16 +226,19 @@ void MapView::copySelection()
         } else if (m_selectionController.entity(key) == -3) {
             ct.spawnRadius = t->spawn_radius;
             ct.npcRadius = m_otbm->npcSpawnRadiusAt(t->x,t->y,t->z);
-        } else if (!t->creature_name.isEmpty() && m_selectionController.entity(key) != -3) {
+        } else if ((!creatureOnly || !ct.blackTekCreature)
+                   && !t->creature_name.isEmpty()
+                   && m_selectionController.entity(key) != -3) {
             ct.creature = t->creature_name;
             ct.monsterChoices = m_otbm->monsterChoicesAt(t->x,t->y,t->z);
             ct.spawntime = t->creature_spawntime;
             ct.npc = t->creature_is_npc;
             ct.direction = t->creature_direction;
-        } else if (!t->items.empty()) {
+        } else if (!creatureOnly && !t->items.empty()) {
             ct.items.push_back(t->items.back());
         }
-        if (ct.items.empty() && ct.creature.isEmpty() && ct.spawnRadius == 0 && ct.npcRadius == 0 && ct.zoneIds.empty()) continue;
+        if (ct.items.empty() && ct.creature.isEmpty() && !ct.blackTekCreature
+            && ct.spawnRadius == 0 && ct.npcRadius == 0 && ct.zoneIds.empty()) continue;
         m_selectionController.clipboard().push_back(std::move(ct));
     }
     emit clipboardChanged();
@@ -288,11 +364,33 @@ void MapView::cutSelection()
 {
     copySelection();
     if (m_selectionController.clipboard().empty() || m_selectionController.selected().isEmpty()) return;
+    QVariantList blackTekRemovals;
+    if (m_otbm->blackTekSpawnMode()) {
+        for (quint64 key : m_selectionController.selected()) {
+            if (!m_selectionController.wholeStack()
+                && m_selectionController.entity(key) != -2) continue;
+            const QVariantMap entry = m_otbm->blackTekCreatureEntryAt(selX(key), selY(key), selZ(key));
+            if (entry.isEmpty()) continue;
+            QVariantMap operation = entry;
+            operation.insert(QStringLiteral("action"), QStringLiteral("remove"));
+            blackTekRemovals.append(operation);
+        }
+    }
 
     std::lock_guard<std::recursive_mutex> dlk(m_dataMutex);
     beginEditBatch();
     m_otbm->beginUndoGroup();
     bool any = false;
+    if (!blackTekRemovals.isEmpty()) {
+        const QString error = m_otbm->editBlackTekCreatureEntries(blackTekRemovals);
+        if (!error.isEmpty()) {
+            m_otbm->cancelUndoGroup();
+            endEditBatch();
+            emit operationWarning(error);
+            return;
+        }
+        any = true;
+    }
     for (quint64 key : m_selectionController.selected()) {
         const int x = selX(key), y = selY(key), z = selZ(key);
         bool removedHere = false;
@@ -309,6 +407,7 @@ void MapView::cutSelection()
                 removedHere = m_otbm->clearSpawnAt(x, y, z); any |= removedHere;
                 if (removedHere) invalidateSpawnIndex();
             }
+            else if (entity == -2) { /* BlackTek TOML removal was staged above. */ }
             else if (m_otbm->clearCreatureAt(x, y, z)) { removedHere = true; any = true; }
             else if (m_otbm->removeTopItem(x, y, z)) { removedHere = true; any = true; }
         }
@@ -353,12 +452,21 @@ void MapView::transformSelection(int dx, int dy, int dz, int quarterTurns)
         int entity = -1;
         int targetEntity = -1;
         TileZoneIds zoneIds;
+        QVariantMap blackTekEntry;
+        QString blackTekCategory;
+        QString blackTekRawEntry;
+        int blackTekPositionStart = -1;
+        int blackTekPositionEnd = -1;
     };
     std::vector<Snap> snap;
     for (quint64 key : m_selectionController.selected()) {
         const int x = selX(key), y = selY(key), z = selZ(key);
         const OtbmTile *t = m_otbm->tileAt(x, y, z);
-        if (!t) continue;
+        const bool includeBlackTek = m_otbm->blackTekSpawnMode()
+            && (m_selectionController.wholeStack() || m_selectionController.entity(key) == -2);
+        const QVariantMap blackTekEntry = includeBlackTek
+            ? m_otbm->blackTekCreatureEntryAt(x, y, z) : QVariantMap{};
+        if (!t && blackTekEntry.isEmpty()) continue;
         Snap s; s.x = x; s.y = y; s.z = z;
         s.entity = m_selectionController.wholeStack() ? -1 : m_selectionController.entity(key);
         s.nx = x + dx; s.ny = y + dy;
@@ -366,6 +474,31 @@ void MapView::transformSelection(int dx, int dy, int dz, int quarterTurns)
             const QPoint target = rotatedSelectionPosition(QPoint(x, y),
                 QRect(QPoint(minX, minY), QPoint(maxX, maxY)), quarterTurns);
             s.nx = target.x(); s.ny = target.y();
+        }
+        if (!blackTekEntry.isEmpty()) {
+            s.blackTekEntry = blackTekEntry;
+            s.blackTekCategory = blackTekEntry.value(QStringLiteral("category")).toString();
+            s.blackTekRawEntry = blackTekEntry.value(QStringLiteral("rawEntry")).toString();
+            s.blackTekPositionStart = blackTekEntry.value(QStringLiteral("positionStart")).toInt();
+            s.blackTekPositionEnd = blackTekEntry.value(QStringLiteral("positionEnd")).toInt();
+        }
+        if (s.entity == -2 && !s.blackTekEntry.isEmpty()) {
+            // A BlackTek creature is independent of any OTBM tile rendered
+            // underneath it. Move only the parsed spawn entry.
+            snap.push_back(std::move(s));
+            continue;
+        }
+        if (s.entity == -2) {
+            // Pixel-perfect picking and right-click creature targeting share
+            // -2. If there is no TOML entry, keep the authored tile creature
+            // on the existing native-creature move path.
+            if (!t || t->creature_name.isEmpty()) continue;
+            s.entity = -1;
+        }
+        if (!t) {
+            if (s.entity != -2 && !m_selectionController.wholeStack()) continue;
+            snap.push_back(std::move(s));
+            continue;
         }
         if (m_selectionController.wholeStack()) {
             s.items.assign(t->items.begin(), t->items.end());
@@ -398,7 +531,8 @@ void MapView::transformSelection(int dx, int dy, int dz, int quarterTurns)
             s.npcRadius = m_otbm->npcSpawnRadiusAt(t->x,t->y,t->z);
             if (m_selectionController.wholeStack()) s.zoneIds = t->zone_ids;
         }
-        if (s.items.empty() && s.creature.isEmpty() && s.spawnRadius == 0 && s.npcRadius == 0 && s.zoneIds.empty()) continue;
+        if (s.items.empty() && s.creature.isEmpty() && s.spawnRadius == 0 && s.npcRadius == 0
+            && s.zoneIds.empty() && s.blackTekEntry.isEmpty()) continue;
         snap.push_back(std::move(s));
     }
     if (snap.empty()) return;
@@ -409,6 +543,121 @@ void MapView::transformSelection(int dx, int dy, int dz, int quarterTurns)
         if (targetX < 0 || targetX > 65535
             || targetY < 0 || targetY > 65535
             || targetZ < 0 || targetZ > 15) return;
+    }
+
+    QVariantList blackTekOperations;
+    struct DefaultZoneMove { int x, y, z; bool npc; QString entry; };
+    QVector<DefaultZoneMove> defaultZoneMoves;
+    QSet<quint64> selectedBlackTekPositions;
+    QSet<quint64> occupiedBlackTekPositions;
+    if (m_otbm->blackTekSpawnMode()) {
+        for (const Snap &s : snap)
+            if (!s.blackTekEntry.isEmpty())
+                selectedBlackTekPositions.insert(selKey(s.x, s.y, s.z));
+        for (const auto &spawn : m_otbm->blackTekCreatureSpawns())
+            occupiedBlackTekPositions.insert(selKey(spawn.x, spawn.y, spawn.z));
+    }
+    for (const Snap &s : snap) {
+        if (s.blackTekEntry.isEmpty()) continue;
+        const int targetX = s.nx, targetY = s.ny, targetZ = s.z + dz;
+        const quint64 targetKey = selKey(targetX, targetY, targetZ);
+        if (occupiedBlackTekPositions.contains(targetKey)
+            && !selectedBlackTekPositions.contains(targetKey)) {
+            emit operationWarning(QStringLiteral("A BlackTek creature already occupies the move destination."));
+            return;
+        }
+        const QString sourcePath = s.blackTekEntry.value(QStringLiteral("sourceFile")).toString();
+        const QString sourceZone = s.blackTekEntry.value(QStringLiteral("zoneName")).toString();
+        const QString sourceCategory = s.blackTekCategory;
+        QVariantMap remove = s.blackTekEntry;
+        remove.insert(QStringLiteral("action"), QStringLiteral("remove"));
+        blackTekOperations.append(remove);
+
+        const QVariantMap destination = m_otbm->blackTekSpawnZoneAt(
+            targetX, targetY, targetZ, sourceCategory == QStringLiteral("npcs"));
+        QString targetCategory;
+        if (!destination.isEmpty()) {
+            const QString type = destination.value(QStringLiteral("type")).toString();
+            if (sourceCategory == QStringLiteral("npcs") && type == QStringLiteral("npc"))
+                targetCategory = QStringLiteral("npcs");
+            else if (sourceCategory == QStringLiteral("monsters") && type == QStringLiteral("monster"))
+                targetCategory = QStringLiteral("monsters");
+            else if (sourceCategory == QStringLiteral("minions") && type == QStringLiteral("boss"))
+                targetCategory = QStringLiteral("minions");
+            else if (sourceCategory == QStringLiteral("master") && type == QStringLiteral("boss")) {
+                const auto creatures = m_otbm->blackTekZoneGeometry(
+                    destination.value(QStringLiteral("sourceFile")).toString(),
+                    destination.value(QStringLiteral("name")).toString())
+                    .value(QStringLiteral("creatures")).toList();
+                const bool occupiedMaster = std::any_of(creatures.cbegin(), creatures.cend(), [&](const QVariant &value) {
+                    const QVariantMap creature = value.toMap();
+                    if (creature.value(QStringLiteral("category")).toString() != QStringLiteral("master")) return false;
+                    const int x = creature.value(QStringLiteral("x")).toInt();
+                    const int y = creature.value(QStringLiteral("y")).toInt();
+                    const int z = creature.value(QStringLiteral("z")).toInt();
+                    return !selectedBlackTekPositions.contains(selKey(x, y, z));
+                });
+                if (!occupiedMaster) targetCategory = QStringLiteral("master");
+            }
+        }
+
+        if (targetCategory.isEmpty()) {
+            if (sourceCategory != QStringLiteral("monsters") && sourceCategory != QStringLiteral("npcs")) {
+                emit operationWarning(QStringLiteral("Cannot move this BlackTek creature outside a compatible spawn zone."));
+                return;
+            }
+            const int originX = std::max(0, targetX - 1);
+            const int originY = std::max(0, targetY - 1);
+            const QString entry = creatureEntryAtPosition(s.blackTekRawEntry,
+                s.blackTekPositionStart, s.blackTekPositionEnd,
+                targetX - originX, targetY - originY, 0);
+            if (entry.isEmpty()) {
+                emit operationWarning(QStringLiteral("Could not preserve the moved BlackTek creature entry."));
+                return;
+            }
+            defaultZoneMoves.append({targetX, targetY, targetZ,
+                sourceCategory == QStringLiteral("npcs"), entry});
+            continue;
+        }
+
+        const QString targetPath = destination.value(QStringLiteral("sourceFile")).toString();
+        const QString targetZone = destination.value(QStringLiteral("name")).toString();
+        const QVariantMap geometry = m_otbm->blackTekZoneGeometry(targetPath, targetZone);
+        if (geometry.isEmpty() || geometry.value(QStringLiteral("playerRelative")).toBool()) {
+            emit operationWarning(QStringLiteral("Cannot move into an unavailable or player-relative BlackTek zone."));
+            return;
+        }
+        const int originX = geometry.value(QStringLiteral("originX")).toInt();
+        const int originY = geometry.value(QStringLiteral("originY")).toInt();
+        const int originZ = geometry.value(QStringLiteral("originZ")).toInt();
+        if (targetX < originX || targetY < originY || targetZ < originZ) {
+            emit operationWarning(QStringLiteral("The move destination is before the BlackTek zone origin."));
+            return;
+        }
+        const QString entry = creatureEntryAtPosition(s.blackTekRawEntry,
+            s.blackTekPositionStart, s.blackTekPositionEnd,
+            targetX - originX, targetY - originY, targetZ - originZ);
+        if (entry.isEmpty()) {
+            emit operationWarning(QStringLiteral("Could not preserve the moved BlackTek creature entry."));
+            return;
+        }
+        if (targetCategory == QStringLiteral("master")) {
+            const bool movingMasterAlready = std::any_of(snap.cbegin(), snap.cend(), [&](const Snap &candidate) {
+                return candidate.blackTekCategory == QStringLiteral("master")
+                    && candidate.blackTekEntry.value(QStringLiteral("sourceFile")).toString() == targetPath
+                    && candidate.blackTekEntry.value(QStringLiteral("zoneName")).toString() == targetZone;
+            });
+            if (movingMasterAlready) {
+                emit operationWarning(QStringLiteral("A BlackTek boss zone can have only one master."));
+                return;
+            }
+        }
+        QVariantMap insert{{QStringLiteral("sourceFile"), targetPath},
+                           {QStringLiteral("zoneName"), targetZone},
+                           {QStringLiteral("category"), targetCategory},
+                           {QStringLiteral("action"), QStringLiteral("insert")},
+                           {QStringLiteral("entry"), entry}};
+        blackTekOperations.append(insert);
     }
 
     QSet<quint64> newSel;
@@ -427,6 +676,52 @@ void MapView::transformSelection(int dx, int dy, int dz, int quarterTurns)
     m_brushController.setBulkEdit(true);
     m_placeEffect = false;
     m_otbm->beginUndoGroup();
+
+    if (!blackTekOperations.isEmpty()) {
+        const QString error = m_otbm->editBlackTekCreatureEntries(blackTekOperations);
+        if (!error.isEmpty()) {
+            m_otbm->cancelUndoGroup();
+            m_brushController.setBulkEdit(savedBulk);
+            m_placeEffect = savedFx;
+            endEditBatch();
+            emit operationWarning(error);
+            return;
+        }
+    }
+    if (!defaultZoneMoves.isEmpty()) {
+        const QString path = QDir(m_otbm->blackTekZoneFolder()).filePath(QStringLiteral("zones.toml"));
+        QString staged = m_otbm->blackTekZoneFileText(path);
+        for (const DefaultZoneMove &move : defaultZoneMoves) {
+            staged = appendDefaultBlackTekSpawnZone(staged, move.x, move.y, move.z,
+                                                    move.npc, move.entry);
+            if (staged.isEmpty()) {
+                m_otbm->cancelUndoGroup();
+                m_brushController.setBulkEdit(savedBulk);
+                m_placeEffect = savedFx;
+                endEditBatch();
+                emit operationWarning(QStringLiteral("Could not create a default BlackTek spawn zone for the moved creature."));
+                return;
+            }
+        }
+        const auto parsed = BlackTekZones::parse(path, staged.toUtf8());
+        if (!parsed.errors.isEmpty()) {
+            m_otbm->cancelUndoGroup();
+            m_brushController.setBulkEdit(savedBulk);
+            m_placeEffect = savedFx;
+            endEditBatch();
+            emit operationWarning(parsed.errors.join(QLatin1Char('\n')));
+            return;
+        }
+        const QString error = m_otbm->editBlackTekZoneFile(path, staged);
+        if (!error.isEmpty()) {
+            m_otbm->cancelUndoGroup();
+            m_brushController.setBulkEdit(savedBulk);
+            m_placeEffect = savedFx;
+            endEditBatch();
+            emit operationWarning(error);
+            return;
+        }
+    }
 
     bool movedSpawn = false;
     for (const Snap &s : snap) {
@@ -1086,12 +1381,147 @@ void MapView::commitPasteAt(int px, int py)
     }
 
     std::lock_guard<std::recursive_mutex> dlk(m_dataMutex);
+    QHash<QString, QString> blackTekUpdates;
+    QSet<quint64> occupiedBlackTekPositions;
+    QSet<QPair<QString, QString>> pastedMasters;
+    const bool hasBlackTekCreature = std::any_of(
+        m_selectionController.clipboard().cbegin(), m_selectionController.clipboard().cend(),
+        [](const ClipTile &tile) { return tile.blackTekCreature; });
+    if (hasBlackTekCreature && m_otbm->blackTekSpawnMode())
+        for (const auto &spawn : m_otbm->blackTekCreatureSpawns())
+            occupiedBlackTekPositions.insert(selKey(spawn.x, spawn.y, spawn.z));
+    for (const ClipTile &ct : m_selectionController.clipboard()) {
+        if (!ct.blackTekCreature) continue;
+        const int tx = px + ct.dx, ty = py + ct.dy;
+        const int tz = m_navigationController.floor() + ct.dz;
+        if (occupiedBlackTekPositions.contains(selKey(tx, ty, tz))) {
+            emit operationWarning(QStringLiteral("A BlackTek creature already occupies the paste destination."));
+            return;
+        }
+        const QVariantMap destination = m_otbm->blackTekSpawnZoneAt(
+            tx, ty, tz, ct.blackTekCategory == QStringLiteral("npcs"));
+        if (destination.isEmpty()) {
+            if (ct.blackTekCategory != QStringLiteral("monsters")
+                && ct.blackTekCategory != QStringLiteral("npcs")) {
+                emit operationWarning(QStringLiteral("Cannot paste this creature outside a compatible BlackTek spawn zone."));
+                return;
+            }
+            const int originX = std::max(0, tx - 1);
+            const int originY = std::max(0, ty - 1);
+            const QString entry = creatureEntryAtPosition(ct.blackTekRawEntry,
+                ct.blackTekPositionStart, ct.blackTekPositionEnd,
+                tx - originX, ty - originY, 0);
+            if (entry.isEmpty()) {
+                emit operationWarning(QStringLiteral("Could not preserve the copied BlackTek creature entry."));
+                return;
+            }
+            const QString path = QDir(m_otbm->blackTekZoneFolder()).filePath(QStringLiteral("zones.toml"));
+            const QString text = blackTekUpdates.value(path, m_otbm->blackTekZoneFileText(path));
+            const QString updated = appendDefaultBlackTekSpawnZone(text, tx, ty, tz,
+                ct.blackTekCategory == QStringLiteral("npcs"), entry);
+            if (updated.isEmpty()) {
+                emit operationWarning(QStringLiteral("Could not create a default BlackTek spawn zone for the pasted creature."));
+                return;
+            }
+            const auto parsed = BlackTekZones::parse(path, updated.toUtf8());
+            if (!parsed.errors.isEmpty()) {
+                emit operationWarning(parsed.errors.join(QLatin1Char('\n')));
+                return;
+            }
+            blackTekUpdates.insert(path, updated);
+            occupiedBlackTekPositions.insert(selKey(tx, ty, tz));
+            continue;
+        }
+        const QString type = destination.value(QStringLiteral("type")).toString();
+        QString category;
+        if (ct.blackTekCategory == QStringLiteral("npcs") && type == QStringLiteral("npc"))
+            category = QStringLiteral("npcs");
+        else if (ct.blackTekCategory == QStringLiteral("monsters") && type == QStringLiteral("monster"))
+            category = QStringLiteral("monsters");
+        else if (ct.blackTekCategory == QStringLiteral("minions") && type == QStringLiteral("boss"))
+            category = QStringLiteral("minions");
+        else if (ct.blackTekCategory == QStringLiteral("master") && type == QStringLiteral("boss")) {
+            const QVariantList creatures = m_otbm->blackTekZoneGeometry(
+                destination.value(QStringLiteral("sourceFile")).toString(),
+                destination.value(QStringLiteral("name")).toString())
+                .value(QStringLiteral("creatures")).toList();
+            const bool hasMaster = std::any_of(creatures.cbegin(), creatures.cend(), [](const QVariant &value) {
+                return value.toMap().value(QStringLiteral("category")).toString() == QStringLiteral("master");
+            });
+            if (!hasMaster) category = QStringLiteral("master");
+        }
+        if (category.isEmpty()) {
+            emit operationWarning(QStringLiteral("Cannot paste this creature into an incompatible BlackTek spawn zone."));
+            return;
+        }
+        const QString path = destination.value(QStringLiteral("sourceFile")).toString();
+        const QString zoneName = destination.value(QStringLiteral("name")).toString();
+        const QVariantMap geometry = m_otbm->blackTekZoneGeometry(path, zoneName);
+        if (geometry.isEmpty()) {
+            emit operationWarning(QStringLiteral("The destination BlackTek zone is no longer available."));
+            return;
+        }
+        if (geometry.value(QStringLiteral("playerRelative")).toBool()) {
+            emit operationWarning(QStringLiteral("Cannot paste into a player-relative BlackTek spawn zone."));
+            return;
+        }
+        const int originX = geometry.value(QStringLiteral("originX")).toInt();
+        const int originY = geometry.value(QStringLiteral("originY")).toInt();
+        const int originZ = geometry.value(QStringLiteral("originZ")).toInt();
+        if (tx < originX || ty < originY || tz < originZ) {
+            emit operationWarning(QStringLiteral("The paste destination is before the BlackTek zone origin."));
+            return;
+        }
+        const QString entry = creatureEntryAtPosition(ct.blackTekRawEntry,
+            ct.blackTekPositionStart, ct.blackTekPositionEnd,
+            tx - originX, ty - originY, tz - originZ);
+        if (entry.isEmpty()) {
+            emit operationWarning(QStringLiteral("Could not preserve the copied BlackTek creature entry."));
+            return;
+        }
+        const bool master = category == QStringLiteral("master");
+        const auto zoneKey = qMakePair(path, zoneName);
+        if (master && pastedMasters.contains(zoneKey)) {
+            emit operationWarning(QStringLiteral("A BlackTek boss zone can have only one master."));
+            return;
+        }
+        if (master) pastedMasters.insert(zoneKey);
+        const QString text = blackTekUpdates.value(path, m_otbm->blackTekZoneFileText(path));
+        const QString updated = m_otbm->replaceBlackTekZoneField(text, zoneName, category, entry, !master);
+        if (updated.isEmpty()) {
+            emit operationWarning(QStringLiteral("Could not prepare the BlackTek creature paste."));
+            return;
+        }
+        const auto parsed = BlackTekZones::parse(path, updated.toUtf8());
+        if (!parsed.errors.isEmpty()) {
+            emit operationWarning(parsed.errors.join(QLatin1Char('\n')));
+            return;
+        }
+        blackTekUpdates.insert(path, updated);
+    }
+    QVariantList zoneEdits;
+    for (auto it = blackTekUpdates.cbegin(); it != blackTekUpdates.cend(); ++it) {
+        zoneEdits.append(QVariantMap{{QStringLiteral("sourceFile"), it.key()},
+                                     {QStringLiteral("action"), QStringLiteral("file")},
+                                     {QStringLiteral("text"), it.value()}});
+    }
     beginEditBatch();
     const bool savedBulk = m_brushController.bulkEdit();
     const bool savedFx = m_placeEffect;
     m_brushController.setBulkEdit(true);
     m_placeEffect = false;
     m_otbm->beginUndoGroup();
+    if (!zoneEdits.isEmpty()) {
+        const QString error = m_otbm->editBlackTekCreatureEntries(zoneEdits);
+        if (!error.isEmpty()) {
+            m_otbm->cancelUndoGroup();
+            m_brushController.setBulkEdit(savedBulk);
+            m_placeEffect = savedFx;
+            endEditBatch();
+            emit operationWarning(error);
+            return;
+        }
+    }
     bool pastedSpawn = false;
     for (const ClipTile &ct : m_selectionController.clipboard()) {
         const int tx = px + ct.dx, ty = py + ct.dy;
@@ -1100,7 +1530,7 @@ void MapView::commitPasteAt(int px, int py)
 
         for (const OtbmMapItem &ci : ct.items)
             placeItemOnFloor(tx, ty, tz, ci);
-        if (!ct.creature.isEmpty()) {
+        if (!ct.blackTekCreature && !ct.creature.isEmpty()) {
             m_otbm->setCreatureAt(tx, ty, tz, ct.creature, ct.spawntime, ct.npc, ct.direction);
             if (!ct.npc) m_otbm->setMonsterChoicesAt(tx,ty,tz,ct.monsterChoices);
             onTileEdited(tx, ty, tz);
